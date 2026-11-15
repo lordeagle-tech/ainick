@@ -26,7 +26,7 @@ async function sendOwnerProgress(sock, text, fallbackJid, isGroup, senderJid) {
     }
   } catch {}
 }
-const { economy, stickers, afk, autoreply, daemons, darkAgent, roles, funFeed, usageTracker, partyExtras, spamScore, scheduledBroadcast, stickerPack, telegramStickers, funExtras, siteRunner, dailyReport, genQuota, zipMemory, ownerCleanup, selfheal, deletehandler, leveling, customCommands, obsidian, names, fixer, tts, messageTracker, training, subagents } = require('./featureRegistry');
+const { economy, stickers, afk, autoreply, daemons, darkAgent, roles, funFeed, usageTracker, partyExtras, spamScore, scheduledBroadcast, stickerPack, telegramStickers, funExtras, siteRunner, dailyReport, genQuota, zipMemory, ownerCleanup, selfheal, deletehandler, leveling, customCommands, obsidian, commandPlugins, names, fixer, tts, messageTracker, training, subagents } = require('./featureRegistry');
 const { Collection } = require('../db');
 const { numFromJid, isGroupJid, fmtCurrency, isGroupStatusMentionMessage, isGroupStatusPost, looksLikeStatusPromo, phonesFromMessageType, timeAgo } = require('../utils/helpers');
 const jidResolver = require('../utils/jidResolver');
@@ -235,7 +235,7 @@ async function cachedGroupMeta(sock, jid) {
 
 function buildMenuText(isOwner = false) {
   const ownerSection = isOwner
-    ? '\n\n*Owner controls*\n• `owner status` — check Nick’s status\n• `model` — view or switch the AI provider\n• `private` / `public` — change access mode'
+    ? '\n\n*Owner controls*\n• `owner menu` — full owner command list\n• `owner status` — check Nick’s status\n• `model` — view or switch the AI provider\n• `private` / `public` — change access mode'
     : '';
   return `╭── ✦ *NICK AI* ✦ ──╮
 │ Built by Lord Eagle
@@ -249,7 +249,7 @@ Ask a question, search the web, get help writing or coding, or summarize a link.
 • \`ping\` — check that I’m online
 
 *In groups*
-Mention me or start your message with \`Nick\`.${ownerSection}`;
+Mention me or start your message with \`Nick\`. Admins can type \`group menu\` for group controls.${ownerSection}`;
 }
 
 function makeRouter({ sock, aiClient, senderName }) {
@@ -860,6 +860,10 @@ if (/^(self[- ]?fix|fix yourself|health check)$/i.test(rawText) && perms.isOwner
         if (res.ok) return sendText(jid, `✅ Self-check passed. No repair needed.`);
         return sendText(jid, `⚠️ Self-repair could not safely complete. Backup: ${res.backupDir || 'none'}`);
       }
+      if (/^\.broken\s*(?:dmon|dmoff|groupon|groupoff)$/i.test(rawText) && !senderIsOwner) {
+        await sendText(jid, '👑 Owner only.');
+        return;
+      }
       if (/^\.broken\s*dmon$/i.test(rawText)) {
         daemons.toggleDaemon(true);
         await sendText(jid, '✅ Daemon mode ON — I will respond to messages.');
@@ -1131,12 +1135,6 @@ if (/^(self[- ]?fix|fix yourself|health check)$/i.test(rawText) && perms.isOwner
       ? noteGroupStreak(jid, resolvedSenderJid || senderJid)
       : false;
 
-    const isAddressed = !isGroup
-      || mentionedBot
-      || repliedToBot
-      || groupStreakAddressed
-      || namedBot;
-
     // Strip leading bot name / @mention noise so commands match cleanly.
     let cleanText = String(rawText || '');
     for (const n of botNameList) {
@@ -1147,10 +1145,30 @@ if (/^(self[- ]?fix|fix yourself|health check)$/i.test(rawText) && perms.isOwner
     }
     cleanText = cleanText.replace(/^@\d{6,}\s*/g, '').trim();
 
+    const pluginContext = {
+      sock,
+      chatId: jid,
+      senderJid: actorJid || resolvedSenderJid || senderJid,
+      senderAliases: senderIdentityAliases,
+      isOwner: senderIsOwner,
+      isGroup,
+      groupMeta,
+      mentions: resolvedMentions,
+      quotedParticipant,
+      botJids: selfNums,
+    };
+    const isAddressed = !isGroup
+      || mentionedBot
+      || repliedToBot
+      || groupStreakAddressed
+      || namedBot
+      || (isGroup && commandPlugins.isExplicitCommand(cleanText));
+
     // --- FAST PATH: instant commands that need no media / group metadata ---
     // Runs before any network/await work so help/ping/games/obsidian reply near-instantly.
-    if (!hasMedia && !isGroupStatusMention && cleanText) {
-      const t = cleanText.trim();
+    if (!hasMedia && !isGroupStatusMention && cleanText && !commandPlugins.isSetProfilePictureCommand(cleanText)) {
+      const commandInput = cleanText.trim();
+      const t = commandPlugins.parseCommand(commandInput).text.trim();
       // Instant build-cancel: works for anyone (not owner-gated — it's their own build
       // request), and only fires while a build is actually running in this chat, so an
       // ordinary "stop"/"cancel" elsewhere in conversation is never hijacked. This goes
@@ -1168,6 +1186,8 @@ if (/^(self[- ]?fix|fix yourself|health check)$/i.test(rawText) && perms.isOwner
       const addressedNow = !isGroup || isAddressed || (senderIsElevated && ownerControlCommand.test(t));
       if (addressedNow) {
       const fastHandled = await (async () => {
+        const pluginResult = await commandPlugins.route(pluginContext, commandInput);
+        if (pluginResult.handled) return sendText(jid, pluginResult.text || '');
         // Owner-only sub-agent status/list. Shows the worker roster and configured backends
         // without exposing API keys.
         if (perms.isOwner(actorJid) && /^(?:subagents?|agents?)\s+(?:list|status)$/i.test(t)) {
@@ -1466,6 +1486,9 @@ if (/^(self[- ]?fix|fix yourself|health check)$/i.test(rawText) && perms.isOwner
         await attachMedia(quotedMsg, quotedType, quoted[quotedType], true);
       }
     }
+
+    const mediaPluginResult = await commandPlugins.handleMedia(pluginContext, cleanText.trim(), imageBuffer || quotedImageBuffer);
+    if (mediaPluginResult.handled) return sendText(jid, mediaPluginResult.text || '');
 
     await typing(jid, true);
 

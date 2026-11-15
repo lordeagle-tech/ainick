@@ -1570,11 +1570,11 @@ const COMMANDS = [
   {
     re: /^addowner\s+(\d+)/i, owner: true,
     fn: async (args) => {
-      const id = args[1];
-      const list = store.get('extraOwners', []);
-      if (!list.includes(id)) list.push(id);
-      store.set('extraOwners', list);
-      return `✅ Added owner ${id} (session). Persist via OWNER_IDS in .env for permanent.`;
+      const id = String(args[1]).replace(/\D/g, '');
+      if (!/^\d{7,15}$/.test(id)) return '❌ Provide a valid country-code phone number.';
+      if (roles.isOwner(id)) return `ℹ️ ${id} is already an owner.`;
+      roles.addOwner(id);
+      return `✅ Owner role added for +${id}.`;
     },
   },
   {

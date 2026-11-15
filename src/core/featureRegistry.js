@@ -27,6 +27,7 @@ module.exports = Object.freeze({
   leveling: require('../features/leveling'),
   customCommands: require('../features/customCommands'),
   obsidian: require('../features/obsidian'),
+  commandPlugins: require('../plugins'),
   names: require('../features/names'),
   fixer: require('../features/fixer'),
   tts: require('../features/tts'),
