@@ -242,7 +242,7 @@ function buildMenuText(isOwner = false) {
 ╰───────────────────╯
 
 *Talk to me*
-Ask a question, search the web, get help writing or coding, or summarize a link. You can also share a photo, document, or voice note and tell me what you need.
+Ask a question, search the web, get help writing or coding, or summarize a link. Ask me to generate an image from a description. You can also send or reply to a photo and ask what’s in it, read text from it, or answer a question about it; share a document or voice note and tell me what you need.
 
 *Quick commands*
 • \`menu\` / \`help\` / \`commands\` — show this menu

@@ -202,6 +202,7 @@ const config = {
         baseUrl: (process.env.GROQ_BASE_URL || 'https://api.groq.com/openai/v1').replace(/\/$/, ''),
         apiKeys: String(process.env.GROQ_API_KEY || '').split(',').map(k => k.trim()).filter(Boolean),
         model: process.env.GROQ_MODEL || 'llama-3.3-70b-versatile',
+        visionModel: process.env.GROQ_VISION_MODEL || 'qwen/qwen3.8-27b',
         fallbackModel: process.env.GROQ_FALLBACK_MODEL || 'llama-3.1-8b-instant',
         style: 'openai',
       },

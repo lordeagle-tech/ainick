@@ -681,6 +681,11 @@ class AIClient {
    *  call so a runtime switch takes effect immediately, no restart needed. */
   async _completion(messages, tools, signal) {
     let provider = getActiveProvider();
+    // Groq's normal chat default is text-only. Image turns use the separately
+    // configured vision model without changing the model used for ordinary chat.
+    if (hasMultimodalContent(messages) && provider.name === 'groq' && provider.visionModel) {
+      provider = { ...provider, model: provider.visionModel };
+    }
     // For multimodal turns, prefer a provider known to support vision when the
     // selected provider does not, avoiding unsupported multimodal requests.
     if (hasMultimodalContent(messages) && !VISION_PROVIDERS.has(provider.name) && config.ai.providers.agnes) {
