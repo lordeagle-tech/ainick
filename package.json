@@ -1,0 +1,47 @@
+{
+  "name": "nick-ai-whatsapp-agent",
+  "version": "4.0.0",
+  "private": true,
+  "description": "Nick AI — Lord Eagle's Groq-powered WhatsApp AI agent built with Baileys.",
+  "main": "src/index.js",
+  "type": "commonjs",
+  "scripts": {
+    "start": "node src/index.js",
+    "start:supervisor": "node supervisor.js",
+    "check": "node scripts/doctor.js --syntax",
+    "doctor": "node scripts/doctor.js",
+    "health": "node -e \"require('./src/features/selfheal').healthCheck().then(x=>{console.log(JSON.stringify(x,null,2));process.exit(x.ok?0:1)})\"",
+    "install-browser": "npx puppeteer browsers install chrome || true; npx playwright install chromium || true"
+  },
+  "engines": {
+    "node": ">=22.12.0"
+  },
+  "dependencies": {
+    "@napi-rs/canvas": "1.0.3",
+    "@sparticuz/chromium": "153.0.0",
+    "@lordeagle21/baileys": "2.3.0",
+    "adm-zip": "0.6.0",
+    "axios": "1.7.9",
+    "dotenv": "16.4.7",
+    "ffmpeg-static": "5.2.0",
+    "form-data": "4.0.1",
+    "jiti": "^2.7.0",
+    "libsignal": "6.0.0",
+    "mathjs": "14.0.1",
+    "msedge-tts": "1.3.4",
+    "pino": "9.6.0",
+    "playwright": "1.49.1",
+    "playwright-core": "1.49.1",
+    "puppeteer": "25.3.0",
+    "puppeteer-core": "25.3.0",
+    "qrcode-terminal": "0.12.0",
+    "sharp": "0.33.5",
+    "youtube-dl-exec": "3.0.15"
+  },
+  "optionalDependencies": {
+    "localtunnel": "2.0.2"
+  },
+  "overrides": {
+    "libsignal": "6.0.0"
+  }
+}

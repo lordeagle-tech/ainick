@@ -1,0 +1,22 @@
+name: Export repository ZIP
+
+on:
+  push:
+    branches: [main]
+  workflow_dispatch:
+
+jobs:
+  export:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@v4
+      - name: Create ZIP
+        run: zip -r wa-agent-full.zip . -x '.git/*' '*.zip'
+      - name: Upload ZIP artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: wa-agent-full
+          path: wa-agent-full.zip
+          retention-days: 7
