@@ -1166,7 +1166,7 @@ if (/^(self[- ]?fix|fix yourself|health check)$/i.test(rawText) && perms.isOwner
 
     // --- FAST PATH: instant commands that need no media / group metadata ---
     // Runs before any network/await work so help/ping/games/obsidian reply near-instantly.
-    if (!hasMedia && !isGroupStatusMention && cleanText && !commandPlugins.isSetProfilePictureCommand(cleanText)) {
+    if (!hasMedia && !isGroupStatusMention && cleanText && !commandPlugins.isDeferredMediaCommand(cleanText)) {
       const commandInput = cleanText.trim();
       const t = commandPlugins.parseCommand(commandInput).text.trim();
       // Instant build-cancel: works for anyone (not owner-gated — it's their own build

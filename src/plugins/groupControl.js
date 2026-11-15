@@ -26,6 +26,9 @@ function helpText() {
     `• \`${command('group stats')}\` — member/admin counts`,
     `• \`${command('group open')}\` / \`${command('group close')}\` — allow admins only / reopen messages`,
     `• \`${command('group lock')}\` / \`${command('group unlock')}\` — lock/unlock group info edits`,
+    `• \`${command('gcname New group name')}\` — change the group name`,
+    `• \`${command('gcdesc New group description')}\` — change the group description`,
+    `• Send or reply to an image with \`${command('gcpp')}\` — change the group photo`,
     `• \`${command('group protection')}\` — show link/tag/bad-word protection settings`,
     `• \`${command('group antilink on|off')}\` and \`${command('group antigrouplink on|off')}\``,
     `• \`${command('group antitag on|off')}\` and \`${command('group antibadword on|off')}\``,
@@ -38,7 +41,11 @@ function helpText() {
 
 function isGroupPluginCommand(input) {
   const parsed = commandPrefix.parseCommand(input);
-  return /^group(?:\s|$)/i.test(parsed.text);
+  return /^(?:group(?:\s|$)|gcname(?:\s|$)|gcdesc(?:\s|$)|gcpp\s*$)/i.test(parsed.text);
+}
+
+function isGroupPictureCommand(input) {
+  return /^gcpp$/i.test(commandPrefix.parseCommand(input).text.trim());
 }
 
 function isGroupAdmin(ctx) {
@@ -84,6 +91,36 @@ function requireGroup(ctx, needBotAdmin = true) {
 async function route(ctx, input) {
   const parsed = commandPrefix.parseCommand(input);
   const text = parsed.text.trim();
+  if (/^gcname(?:\s|$)/i.test(text)) {
+    const value = text.replace(/^gcname\s*/i, '').trim();
+    if (commandPrefix.needsPrefix(parsed)) return { handled: true, text: `This command needs the configured prefix. Try: \`${parsed.prefix}${text}\`` };
+    const denial = requireGroup(ctx, true);
+    if (denial) return { handled: true, text: denial };
+    if (!value) return { handled: true, text: 'Usage: `gcname New group name`.' };
+    try {
+      await groupAdmin.setSubject(ctx.sock, ctx.chatId, value);
+      return { handled: true, text: '✅ Group name updated.' };
+    } catch (e) {
+      return { handled: true, text: `Could not update the group name: ${e.message}` };
+    }
+  }
+  if (/^gcdesc(?:\s|$)/i.test(text)) {
+    const value = text.replace(/^gcdesc\s*/i, '').trim();
+    if (commandPrefix.needsPrefix(parsed)) return { handled: true, text: `This command needs the configured prefix. Try: \`${parsed.prefix}${text}\`` };
+    const denial = requireGroup(ctx, true);
+    if (denial) return { handled: true, text: denial };
+    if (!value) return { handled: true, text: 'Usage: `gcdesc New group description`.' };
+    try {
+      await groupAdmin.setDescription(ctx.sock, ctx.chatId, value);
+      return { handled: true, text: '✅ Group description updated.' };
+    } catch (e) {
+      return { handled: true, text: `Could not update the group description: ${e.message}` };
+    }
+  }
+  if (isGroupPictureCommand(input)) {
+    if (commandPrefix.needsPrefix(parsed)) return { handled: true, text: `This command needs the configured prefix. Try: \`${parsed.prefix}gcpp\`` };
+    return { handled: false };
+  }
   if (!/^group(?:\s|$)/i.test(text)) return { handled: false };
 
   const action = text.replace(/^group\s*/i, '').trim() || 'menu';
@@ -205,4 +242,21 @@ async function route(ctx, input) {
   return { handled: true, text: helpText() };
 }
 
-module.exports = { route, isGroupPluginCommand, helpText };
+async function handleMedia(ctx, input, imageBuffer) {
+  if (!isGroupPictureCommand(input)) return { handled: false };
+  const parsed = commandPrefix.parseCommand(input);
+  if (commandPrefix.needsPrefix(parsed)) return { handled: true, text: `This command needs the configured prefix. Try: \`${parsed.prefix}gcpp\`` };
+  const denial = requireGroup(ctx, true);
+  if (denial) return { handled: true, text: denial };
+  if (!Buffer.isBuffer(imageBuffer) || !imageBuffer.length) {
+    return { handled: true, text: 'Send or reply to an image with `gcpp` to change the group photo.' };
+  }
+  try {
+    await groupAdmin.setPicture(ctx.sock, ctx.chatId, imageBuffer);
+    return { handled: true, text: '✅ Group photo updated.' };
+  } catch (e) {
+    return { handled: true, text: `Could not update the group photo: ${e.message}` };
+  }
+}
+
+module.exports = { route, handleMedia, isGroupPluginCommand, isGroupPictureCommand, helpText };
