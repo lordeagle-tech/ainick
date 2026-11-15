@@ -233,25 +233,24 @@ async function cachedGroupMeta(sock, jid) {
   }
 }
 
-const HELP_TEXT = `
-╭─── ✦ *BROKEN* ✦ ───╮
-│  Agent — not a game bot
-╰────────────────────╯
+function buildMenuText(isOwner = false) {
+  const ownerSection = isOwner
+    ? '\n\n*Owner controls*\n• `owner status` — check Nick’s status\n• `model` — view or switch the AI provider\n• `private` / `public` — change access mode'
+    : '';
+  return `╭── ✦ *NICK AI* ✦ ──╮
+│ Built by Lord Eagle
+╰───────────────────╯
 
-*What I do*
-  Multi-step agent: plan → tools → verify → deliver
-  Code, search, browse, download, build, fix, host
-  Zips/repos, shell (owner), GitHub, memory, reminders
+*Talk to me*
+Ask a question, search the web, get help writing or coding, or summarize a link. You can also share a photo, document, or voice note and tell me what you need.
 
-*How to use*
-  DM me, or tag/reply in a group
-  Just say what you need — no menu required
+*Quick commands*
+• \`menu\` / \`help\` / \`commands\` — show this menu
+• \`ping\` — check that I’m online
 
-*Owner*
-  delete (reply to a message)
-
-Games, economy, levels, polls, reactions, shell, GitHub, media — full agent.
-`;
+*In groups*
+Mention me or start your message with \`Nick\`.${ownerSection}`;
+}
 
 function makeRouter({ sock, aiClient, senderName }) {
   const sender = require('../whatsapp/sender').makeSender(sock);
@@ -1278,7 +1277,7 @@ if (/^(self[- ]?fix|fix yourself|health check)$/i.test(rawText) && perms.isOwner
         }
         // daily question removed
         // group challenge removed
-        if (/^(help|menu|commands)$/i.test(t)) return sendText(jid, HELP_TEXT);
+        if (/^(help|menu|commands)$/i.test(t)) return sendText(jid, buildMenuText(senderIsOwner));
         if (/^(\/|!)?ping$/i.test(t)) return sendText(jid, '🏓 pong — I\'m alive.');        // profile/leveling removed
 
         if (perms.isOwner(actorJid) && /^broadcast\s+/i.test(t)) {
@@ -1473,7 +1472,7 @@ if (/^(self[- ]?fix|fix yourself|health check)$/i.test(rawText) && perms.isOwner
     try {
       // --- 3. tiny built-ins that don't need the model ---
       if (/^(help|menu|commands)$/i.test(cleanText.trim())) {
-        return sendText(jid, HELP_TEXT);
+        return sendText(jid, buildMenuText(senderIsOwner));
       }
 
       if (/^(?:\/ctx|ctx|usage|token\s*usage)$/i.test(cleanText.trim())) {
@@ -2341,4 +2340,4 @@ User language preference: ${userLang}. Reply in that language when reasonable.`)
   return { handleIncoming };
 }
 
-module.exports = { makeRouter };
+module.exports = { makeRouter, buildMenuText };

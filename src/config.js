@@ -266,12 +266,12 @@ const config = {
       ? false
       : (process.env.RESPOND_IN_GROUPS_ALWAYS || 'false') === 'true',
     botNames: [...new Set(
-      [...list(process.env.BOT_NAMES), 'broken']
+      [...list(process.env.BOT_NAMES), 'nick', 'nick ai']
         .map((n) => String(n || '').trim().toLowerCase())
         .filter(Boolean)
-        // Never wake on generic AI words — only the brand name "broken" (and BOT_NAMES overrides)
+        // Never wake on generic AI words — only Nick's brand name (and BOT_NAMES overrides)
         .filter((n) => !['ai', 'bot', 'agent', 'agnes', 'gpt', 'chatgpt', 'claude', 'gemini'].includes(n))
-    )],
+    )].sort((a, b) => b.length - a.length),
   },
   economy: {
     currencyName: process.env.ECONOMY_CURRENCY_NAME || 'coins',
