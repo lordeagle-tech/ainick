@@ -247,13 +247,10 @@ const config = {
     ),
   },
   behavior: {
-    // Group AI requires a mention, bot-name call, or reply by default; the legacy always-on flag cannot override this.
-    // Set GROUP_REQUIRE_ADDRESS=false to deliberately enable always-on group replies.
+    // Group and DM replies require an explicit call; legacy always-on flags cannot override this.
     notifyOwnersOnChat: (process.env.NOTIFY_OWNERS_ON_CHAT || 'false') === 'true',
-    groupRequireAddress: !['false', '0', 'no', 'off'].includes(String(process.env.GROUP_REQUIRE_ADDRESS || 'true').toLowerCase()),
-    respondInGroupsAlways: (process.env.GROUP_REQUIRE_ADDRESS || 'true') !== 'false'
-      ? false
-      : (process.env.RESPOND_IN_GROUPS_ALWAYS || 'false') === 'true',
+    groupRequireAddress: true,
+    respondInGroupsAlways: false,
     botNames: [...new Set(
       [...list(process.env.BOT_NAMES), 'nick', 'nick ai']
         .map((n) => String(n || '').trim().toLowerCase())

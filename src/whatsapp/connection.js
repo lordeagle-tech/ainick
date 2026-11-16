@@ -214,7 +214,7 @@ async function connect(onSocket) {
       printQRInTerminal: false,
       syncFullHistory: false,
       fireInitQueries: false,
-      markOnlineOnConnect: false,
+      markOnlineOnConnect: true,
       emitOwnEvents: true,
       // Longer timeout while pairing so the socket does not die before you type the code.
       connectTimeoutMs: needsPairing || isInPairingGrace() ? PAIRING_CONNECT_TIMEOUT_MS : 60000,

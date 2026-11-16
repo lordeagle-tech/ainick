@@ -54,41 +54,6 @@ function formatCoalescedParts(parts) {
   return clean.map((p, i) => `[msg ${i + 1}/${clean.length}] ${p}`).join('\n');
 }
 
-// Consecutive group messages can count as addressing the bot; tune with the streak settings below.
-const groupStreaks = new Map();
-const GROUP_STREAK_THRESHOLD = Number(process.env.GROUP_STREAK_THRESHOLD ?? 3);
-const GROUP_STREAK_WINDOW_MS = Number(process.env.GROUP_STREAK_WINDOW_MS || 25000);
-
-function noteGroupStreak(chatId, senderId) {
-  if (!GROUP_STREAK_THRESHOLD) return false;
-  const key = `${chatId}::${senderId}`;
-  const now = Date.now();
-  const prev = groupStreaks.get(key);
-
-  if (!prev || now - prev.lastAt > GROUP_STREAK_WINDOW_MS) {
-    groupStreaks.set(key, { count: 1, lastAt: now, engaged: false });
-    return false;
-  }
-
-  prev.count += 1;
-  prev.lastAt = now;
-
-  // Already answered this run — stay quiet so the reply is not repeated.
-  if (prev.engaged) return false;
-
-  if (prev.count >= GROUP_STREAK_THRESHOLD) {
-    prev.engaged = true;
-    return true;
-  }
-  return false;
-}
-
-// Drop stale streaks so the map cannot grow without bound in busy groups.
-setInterval(() => {
-  const cutoff = Date.now() - GROUP_STREAK_WINDOW_MS * 2;
-  for (const [k, v] of groupStreaks) if (v.lastAt < cutoff) groupStreaks.delete(k);
-}, 60000).unref?.();
-
 function coalesceUserText(scope, text, opts = {}) {
   const piece = String(text || '').trim();
   if (!piece) return Promise.resolve('');
@@ -175,10 +140,6 @@ function logGroupMessage(groupId, sender, text) {
 const stickerCooldown = new Map();
 const STICKER_COOLDOWN_MS = 3 * 60 * 60 * 1000;
 
-// Rate-limit spontaneous group engagement reactions.
-const groupEngagement = new Map();
-const GROUP_ENGAGEMENT_COOLDOWN_MS = 4 * 60 * 1000;
-const GROUP_EMOJIS = ['😭', '💀', '😐', '🫠', '🎀', '🦋', '🫧', '🤦🏽‍♀️', '😂', '🔥', '👍', '👀'];
 async function cachedGroupMeta(sock, jid) {
   const hit = groupMetaCache.get(jid);
   if (hit && Date.now() - hit.t < 5000) return hit.meta;
@@ -597,6 +558,29 @@ function makeRouter({ sock, aiClient, senderName }) {
       return;
     }
 
+    const rawText = (mt.conversation || mt.extendedTextMessage?.text || mt.imageMessage?.caption || mt.videoMessage?.caption || '').trim();
+    const mentions =
+      mt.extendedTextMessage?.contextInfo?.mentionedJid ||
+      mt.imageMessage?.contextInfo?.mentionedJid ||
+      mt.videoMessage?.contextInfo?.mentionedJid ||
+      [];
+    const botNameList = (config.behavior && config.behavior.botNames) || ['broken'];
+    let selfNums = jidResolver.selfIds(sock, preJidMap);
+    const mentionedBot = (Array.isArray(mentions) ? mentions : [])
+      .some((m) => jidResolver.matchesAny(m, selfNums));
+    const repliedToBot = (() => {
+      try { return autoreply.isBotMessageReplied(msg); } catch { return false; }
+    })();
+    const callText = rawText.normalize('NFKC').replace(/[\u200B-\u200D\uFEFF]/g, '').trim();
+    const namedBot = botNameList.some((n) => n && callText && botNamePattern(n).test(callText));
+    const cleanText = stripBotAddress(callText, botNameList);
+    const builtInCommand = /^(?:help|menu|commands|normal menu|(?:\/|!)?(?:up|ping|ping2|uptime|alive|test))$/i.test(cleanText);
+    let isAddressed = mentionedBot || repliedToBot || namedBot
+      || commandPlugins.parseCommand(cleanText).hadPrefix
+      || builtInCommand
+      || commandPlugins.isExplicitCommand(cleanText);
+    let isBareCall = !cleanText && (namedBot || mentionedBot);
+
     // Anti-view-once inspects only message-envelope keys; it never opens, downloads,
     // reveals, or forwards protected media. Run this before sticker/media handlers.
     const hasViewOnceEnvelope = (message) => {
@@ -635,7 +619,7 @@ function makeRouter({ sock, aiClient, senderName }) {
           logger.warn({ jid, err: e.message }, 'anti-view-once group moderation failed');
         }
       }
-      if (!deleted) await sendText(jid, viewOnceHelp).catch(() => {});
+      if (!deleted && isAddressed) await sendText(jid, viewOnceHelp).catch(() => {});
       return;
     }
     let groupMediaModerationTriggered = false;
@@ -673,6 +657,8 @@ function makeRouter({ sock, aiClient, senderName }) {
         if (groupMediaModerationTriggered) return;
       }
     }
+
+    if (!isAddressed && !isGroup && !mentions.length) return;
     
     // Track bot's sent messages for auto-reply
     if (msg.key.fromMe) {
@@ -680,10 +666,7 @@ function makeRouter({ sock, aiClient, senderName }) {
     }
 
     // --- stickers ---
-    // Save every sticker. A sticker that is a direct reply to one of our messages is
-    // treated as a real conversation turn and is never blocked by the random-sticker
-    // cooldown. It gets a quoted response (sticker or text) so WhatsApp shows the
-    // normal reply card.
+    // Save every sticker; only a direct reply to the bot can trigger a response.
     if (mt.stickerMessage) {
       try {
         const stickerCtx = mt.stickerMessage?.contextInfo || {};
@@ -700,15 +683,11 @@ function makeRouter({ sock, aiClient, senderName }) {
         stickers.saveSticker(buffer, { chatId: jid, senderId: numFromJid(senderJid) });
         const reply = ['😂 I see you!', 'Haha, nice one 😭', 'That sticker says enough 😂', '🤣🤣', 'I got you 😎'];
 
-        // Stickers are a special, lightweight exception to the group AI gate.
-        // They NEVER wake the AI by themselves. Instead, occasionally react with
-        // a sticker/text just like a human might. Direct replies to the bot get a
-        // higher chance; ordinary group stickers stay mostly quiet.
+        // Only a sticker explicitly sent as a reply to the bot can get a response.
         const now = Date.now();
         const lastStickerReply = stickerCooldown.get(jid) || 0;
         const cooldownReady = now - lastStickerReply >= STICKER_COOLDOWN_MS;
-        const chance = isReplyToBot ? 0.75 : (isGroup ? config.stickers.replyToStickerChance : 0.45);
-        const shouldReact = cooldownReady && Math.random() < Math.max(0, Math.min(1, chance));
+        const shouldReact = isAddressed && isReplyToBot && cooldownReady;
 
         if (shouldReact) {
           stickerCooldown.set(jid, now);
@@ -732,7 +711,6 @@ function makeRouter({ sock, aiClient, senderName }) {
     const hasImage = !!mt.imageMessage;
     const hasMedia = hasImage || !!mt.videoMessage || !!mt.audioMessage;
 
-    const rawText = (mt.conversation || mt.extendedTextMessage?.text || mt.imageMessage?.caption || mt.videoMessage?.caption || '').trim();
     if (isGroup && rawText) logGroupMessage(jid, senderJid, rawText);
     const contactPhones = phonesFromMessageType(mt);
     if (!rawText && !isGroupStatusMention && !hasMedia && !contactPhones.length) return;
@@ -778,14 +756,17 @@ function makeRouter({ sock, aiClient, senderName }) {
     const quotedMessageId = quotedContext?.stanzaId || quotedContext?.quotedMessageId || null;
 
     // Never unwrap or download quoted view-once media, regardless of the command text.
-    if (hasViewOnceEnvelope(ctxInfoDoc?.quotedMessage)) return sendText(jid, viewOnceHelp);
+    if (hasViewOnceEnvelope(ctxInfoDoc?.quotedMessage)) {
+      if (isAddressed) await sendText(jid, viewOnceHelp);
+      return;
+    }
 
     // --- open quoted document / text file (NOT view-once) ---
     const quotedDoc = quotedUnwrapped?.documentMessage || quotedMessage?.documentMessage
       || quotedUnwrapped?.documentWithCaptionMessage?.message?.documentMessage;
     const wantsOpenFile = !!quotedDoc && /\b(open|read|paste|show|extract|print)\b/i.test(rawText || '')
       && /\b(file|text|txt|document|doc|content|lyrics|paste)\b/i.test(rawText || '');
-    if (wantsOpenFile) {
+    if (isAddressed && wantsOpenFile) {
       try {
         const { downloadMediaMessage } = require('@lordeagle21/baileys');
         const payloadMsg = {
@@ -822,7 +803,7 @@ function makeRouter({ sock, aiClient, senderName }) {
     const deleteMineRe = /^(?:broken\s+)?(?:please\s+)?(?:delete|remove|clear)\s+(?:all\s+)?(?:this\s+)?(?:text\s+)?(?:you\s+)?(?:sent\s+)?(?:your\s+)?(?:the\s+)?(?:bot(?:'s|s)?\s+)?(?:error\s+)?(?:messages?|reports?|spam)?\s*$/i
       || /^(?:broken\s+)?delete\s+(?:all|every)\s+(?:my|your|its|the\s+bot(?:'s|s)?)\s+messages?\s*$/i
       || /^(?:broken\s+)?(?:delete|clear)\s+(?:all\s+)?(?:your\s+)?(?:error\s+)?(?:reports?|messages?)\s*$/i;
-    if (rawText && (
+    if (isAddressed && rawText && (
       /^(?:broken\s+)?delete\s+(?:all|every)\s+(?:my|your|its|the\s+bot(?:'s|s)?)\s+messages?\s*$/i.test(rawText)
       || /^(?:broken\s+)?(?:please\s+)?(?:delete|remove|clear)\s+(?:all\s+)?(?:this\s+)?(?:text\s+)?you\s+sent\b/i.test(rawText)
       || /^(?:broken\s+)?(?:please\s+)?(?:delete|clear)\s+(?:all\s+)?(?:your\s+)?(?:error\s+)?(?:reports?|messages?)\s*$/i.test(rawText)
@@ -858,7 +839,7 @@ function makeRouter({ sock, aiClient, senderName }) {
     }
 
     // --- Handle delete command ---
-    if (rawText && deletehandler.isDeleteCommand(rawText)) {
+    if (isAddressed && rawText && deletehandler.isDeleteCommand(rawText)) {
       const quotedRaw = quotedParticipantRaw || '';
       const botIds = [sock.user?.id, sock.user?.lid, sock.authState?.creds?.me?.id, sock.authState?.creds?.me?.lid].filter(Boolean);
       const quotedLooksLikeBot = !!ctxInfoDoc?.stanzaId && (
@@ -884,7 +865,7 @@ function makeRouter({ sock, aiClient, senderName }) {
 
     
     // Follow-up about last zip fix (do NOT re-run fixer)
-    if (rawText && /\\b(what did you fix|what was fixed|what.?s in (the|that) zip|what is in (the|that) zip|explain the fix|which files|what changed)\\b/i.test(rawText)) {
+    if (isAddressed && rawText && /\\b(what did you fix|what was fixed|what.?s in (the|that) zip|what is in (the|that) zip|explain the fix|which files|what changed)\\b/i.test(rawText)) {
       const mem = zipMemory.get(jid);
       if (mem && mem.type === 'fix') {
         return sendText(jid,
@@ -903,7 +884,7 @@ function makeRouter({ sock, aiClient, senderName }) {
 
     // --- Fix-my-zip: user replies to a .zip with a complaint ("fix this", "it errors") ---
     const quotedZipDoc = ctxInfoDoc?.quotedMessage?.documentMessage;
-    if (quotedZipDoc && /\.zip$/i.test(quotedZipDoc.fileName || '')) {
+    if (isAddressed && quotedZipDoc && /\.zip$/i.test(quotedZipDoc.fileName || '')) {
       const isQuestion = /\?\s*$|^(what|why|how|which|where|who|did you|can you tell|explain|show me|list)\b/i.test(rawText.trim());
       const wantsFix = !isQuestion && /\b(fix|repair|debug|patch)\b|\b(not working|broken|crashes?|bug[s]?)\b/i.test(rawText)
         && !/\b(what did you|what was|what is in|what's in|whats in|did you fix|explain the fix|tell me what)\b/i.test(rawText);
@@ -941,7 +922,7 @@ function makeRouter({ sock, aiClient, senderName }) {
     }
     
     // --- Handle daemon toggle commands ---
-    if (perms.isOwner(actorJid)) {
+    if (isAddressed && perms.isOwner(actorJid)) {
       
     // Owner storage cleanup: clear stickers / builds / fixes / temp / all / status
     if (perms.isOwner(actorJid) && rawText && /^(?:broken\s+)?(?:clear|delete|purge|cleanup|clean)\s+(?:all\s+)?(?:saved\s+)?(?:stickers?|builds?|build\s+zips?|fixes?|fix\s+zips?|temp|tmp|downloads?|storage|everything)\b/i.test(rawText)
@@ -1007,7 +988,7 @@ if (/^(self[- ]?fix|fix yourself|health check)$/i.test(rawText) && perms.isOwner
     // Poll creation is handled before the LLM so a request such as
     // `poll: Question | Option A | Option B` can never be mistaken for a
     // normal text response. This sends an actual WhatsApp poll message.
-    if (rawText && /^(?:poll|make\s+(?:a\s+)?poll)\s*:/i.test(rawText)) {
+    if (isAddressed && rawText && /^(?:poll|make\s+(?:a\s+)?poll)\s*:/i.test(rawText)) {
       const body = rawText.replace(/^(?:poll|make\s+(?:a\s+)?poll)\s*:/i, '').trim();
       const parts = body.split(/\s*\|\s*/).map(x => x.trim()).filter(Boolean);
       const question = parts.shift() || '';
@@ -1036,12 +1017,6 @@ if (/^(self[- ]?fix|fix yourself|health check)$/i.test(rawText) && perms.isOwner
       return;
     }
 
-    const mentions =
-      mt.extendedTextMessage?.contextInfo?.mentionedJid ||
-      mt.imageMessage?.contextInfo?.mentionedJid ||
-      mt.videoMessage?.contextInfo?.mentionedJid ||
-      [];
-
     let groupMeta = null;
     if (isGroup) {
       groupMeta = await cachedGroupMeta(sock, jid);
@@ -1050,6 +1025,13 @@ if (/^(self[- ]?fix|fix yourself|health check)$/i.test(rawText) && perms.isOwner
     // WhatsApp LID/PN normalization: resolve the real phone number whenever WhatsApp
     // supplied a mapping. This is critical for @mentions, XP, roles and moderation.
     const jidMap = jidResolver.buildMap(sock, msg, groupMeta);
+    const resolvedMentions = await jidResolver.normalizeManyWithSock(mentions, sock, jidMap, groupMeta);
+    selfNums = jidResolver.selfIds(sock, jidMap);
+    const resolvedMentionedBot = resolvedMentions.some((mention) => jidResolver.matchesAny(mention, selfNums));
+    if (resolvedMentionedBot) {
+      isAddressed = true;
+      if (!cleanText && !namedBot) isBareCall = true;
+    }
     // Learn/resolve LID mappings from Baileys' persistent mapping store when available.
     // This is async because getPNForLID is async in Baileys 6.7.x.
     if (jidResolver.isLid(senderJid)) {
@@ -1141,7 +1123,7 @@ if (/^(self[- ]?fix|fix yourself|health check)$/i.test(rawText) && perms.isOwner
       logger.info({ jid, actor: String(actorJid).slice(0, 40), mode: obsidian.getGlobalMode() }, 'private after LID resolve: drop');
       return;
     }
-    // Public only widens *who* may talk to the bot; engagement still needs a tag/name/reply.
+    // Public mode widens who can use the bot, but every reply still needs an explicit call.
 
     // Stable memory identity: prefer the real phone-number identity resolved from a LID.
     // This keeps the same person's memory together while preventing different group
@@ -1160,11 +1142,15 @@ if (/^(self[- ]?fix|fix yourself|health check)$/i.test(rawText) && perms.isOwner
       } catch {}
     }
 
+    if (isBareCall) {
+      logger.info({ chatType: isGroup ? 'group' : 'dm' }, 'bare bot call received');
+      return sendText(jid, 'I’m here. Ask your question after “Nick”, or send “menu” to see commands.');
+    }
+    if (!isAddressed) return;
+
     senderIdentity.name = msg.pushName || '';
     memory.rememberIdentity(memoryUserId, senderIdentity);
     // Resolve @mentions through Baileys LID→phone mapping so DMs/admin tools get real numbers
-    const resolvedMentions = await jidResolver.normalizeManyWithSock(mentions, sock, jidMap, groupMeta);
-    const selfNums = jidResolver.selfIds(sock, jidMap);
     // Keep raw PN/LID identities registered for participant-based reply detection.
     autoreply.registerBotJids([...selfNums]);
 
@@ -1189,32 +1175,6 @@ if (/^(self[- ]?fix|fix yourself|health check)$/i.test(rawText) && perms.isOwner
     // Display label for @-mentions in bot text: name + real number, not raw jid/lid.
     const who = names.displayLabel(resolvedSenderJid, isGroup ? jid : null, groupMeta);
 
-    // Sparse human-style group presence. This never wakes the AI.
-    if (isGroup && !senderIsElevated && rawText && !isGroupStatus) {
-      try {
-        const now = Date.now();
-        const last = groupEngagement.get(jid) || 0;
-        if (now - last >= GROUP_ENGAGEMENT_COOLDOWN_MS && Math.random() < 0.055) {
-          groupEngagement.set(jid, now);
-          const roll = Math.random();
-          if (roll < 0.38) {
-            await sendText(jid, GROUP_EMOJIS[Math.floor(Math.random() * GROUP_EMOJIS.length)]);
-          } else if (roll < 0.72) {
-            const emoji = ['😭', '💀', '😐', '😂', '🫠'][Math.floor(Math.random() * 5)];
-            await sock.sendMessage(jid, { react: { text: emoji, key: msg.key } }).catch(() => {});
-          } else {
-            const back = stickers.getRandom();
-            if (back) await sendSticker(jid, back, { quoted: msg });
-            else await sendText(jid, GROUP_EMOJIS[Math.floor(Math.random() * GROUP_EMOJIS.length)]);
-          }
-        }
-      } catch (e) {
-        logger.debug({ err: e.message }, 'group engagement skipped');
-      }
-    }
-
-
-
     // --- anti-spam: ignore the same message repeated 3+ times in quick succession ---
     if (rawText) {
       const spamKey = `${jid}:${numFromJid(senderJid)}:${rawText.slice(0, 60)}`;
@@ -1229,39 +1189,6 @@ if (/^(self[- ]?fix|fix yourself|health check)$/i.test(rawText) && perms.isOwner
       }
       if (spam.size > 500) spam.clear();
     }
-    // DMs are direct conversations; groups are gated by isAddressed below.
-
-    // --- Engagement + clean text (must exist before any cleanText / isAddressed use) ---
-    const botNameList = (config.behavior && config.behavior.botNames) || ['broken'];
-    const selfIdSet = new Set(
-      [...(selfNums || []), sock?.user?.id, sock?.user?.lid, sock?.authState?.creds?.me?.id, sock?.authState?.creds?.me?.lid]
-        .filter(Boolean)
-        .map((id) => String(id).split(':')[0].split('@')[0])
-    );
-    const mentionedBot = (mentions || []).some((m) => {
-      const n = String(m || '').split(':')[0].split('@')[0];
-      return selfIdSet.has(n) || selfNums?.includes?.(m);
-    });
-    const repliedToBot = (() => {
-      try { return autoreply.isBotMessageReplied(msg); } catch { return false; }
-    })();
-    const namedBot = botNameList.some((n) => {
-      if (!n || !rawText) return false;
-      return botNamePattern(n).test(String(rawText).trim());
-    });
-    // HARD rule: groups only respond when @mentioned, reply-to-bot, or bot name starts the message.
-    // Owners are never auto-addressed for normal chat (that caused hopping on every message).
-    const requireAddress = true;
-    // A run of consecutive messages counts as being addressed, so a user who
-    // sends three quick lines gets one reply that understands all three,
-    // instead of silence or three separate answers.
-    const groupStreakAddressed = isGroup && !senderIsElevated
-      ? noteGroupStreak(jid, resolvedSenderJid || senderJid)
-      : false;
-
-    // Strip leading bot name / @mention noise so commands match cleanly.
-    const cleanText = stripBotAddress(rawText, botNameList);
-
     const pluginContext = {
       sock,
       chatId: jid,
@@ -1285,13 +1212,6 @@ if (/^(self[- ]?fix|fix yourself|health check)$/i.test(rawText) && perms.isOwner
         groupMembers: Array.isArray(groupMeta?.participants) ? groupMeta.participants.length : null,
       },
     };
-    const isAddressed = !isGroup
-      || mentionedBot
-      || repliedToBot
-      || groupStreakAddressed
-      || namedBot
-      || (isGroup && commandPlugins.isExplicitCommand(cleanText));
-
     // --- FAST PATH: instant commands that need no media / group metadata ---
     // Runs before any network/await work so help/ping/games/obsidian reply near-instantly.
     if (!hasMedia && !isGroupStatusMention && cleanText && !commandPlugins.isDeferredMediaCommand(cleanText)) {
@@ -1306,12 +1226,11 @@ if (/^(self[- ]?fix|fix yourself|health check)$/i.test(rawText) && perms.isOwner
         aiTools.cancelBuild(jid);
         return; // the build's own catch block sends the "🛑 Build cancelled" confirmation
       }
-      // Normal group chatter must not enter the command/AI path. Explicit
-      // addressing is required: @mention, reply to the bot, or bot name.
+      // Unaddressed messages must not enter the command/AI path.
       // Owner control commands remain available without a tag because they are
       // explicit privileged commands, not conversational replies.
       const ownerControlCommand = /^(?:private|public|open|unlock|lockdown|owner[- ]only|group[- ]only|groups[- ]only|dm[- ]only|dms[- ]only|private[- ]chat[- ]only|all[- ]chats|scope[- ]all|all|maintenance(?:\s+(?:on|off))?|ignore(?:\s+(?:this\s+)?(?:chat|here))?|mute(?:\s+(?:this\s+)?(?:chat|here))?|silence(?:\s+(?:this\s+)?(?:chat|here))?|listen(?:\s+(?:to\s+)?(?:this\s+)?(?:chat|here))?|unignore(?:\s+(?:this\s+)?(?:chat|here))?|unsilence(?:\s+(?:this\s+)?(?:chat|here))?|clear\s+ignored(?:\s+chats)?|owner\s+status|bot\s+status|autostatus\s+view(?:\s+(?:on|off|enable|disable|status))?|autotyping(?:\s+(?:on|off|enable|disable|status))?|mode(?:\s+(?:public|private))?)$/i;
-      const addressedNow = !isGroup || isAddressed || (senderIsElevated && ownerControlCommand.test(t))
+      const addressedNow = isAddressed || (senderIsElevated && ownerControlCommand.test(t))
         || (senderIsOwner && /^restart$/i.test(t));
       if (addressedNow) {
       const sendPlainCommandText = sendText;
@@ -1541,13 +1460,6 @@ if (/^(self[- ]?fix|fix yourself|health check)$/i.test(rawText) && perms.isOwner
       }
     } catch (e) {
       logger.warn({ err: e.message }, 'autolink failed');
-    }
-
-    // Normal group chatter must not wake the AI. Users can address it by mention,
-    // bot name, or replying to a bot message.
-    if (isGroup && !isAddressed) {
-      // Quiet — do not hop on untagged group traffic
-      return;
     }
 
     // DM: if user pastes a GitHub PAT, save it privately for their account only.
@@ -2398,7 +2310,7 @@ User language preference: ${userLang}. Reply in that language when reasonable.`)
       } catch {}
 
     // pack add: text message replying to sticker
-    if (isAddressed || !isGroup) {
+    if (isAddressed) {
       try {
         const tpack = String(cleanText || '').trim();
         if (/^pack\s+add\b/i.test(tpack) && (stickerBuffer || quotedStickerBuffer)) {
