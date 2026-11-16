@@ -69,6 +69,12 @@ function addBotMessage(msgKey) {
   }
 }
 
+function isBotMessage(msg) {
+  const id = msg?.key?.id || msg?.id;
+  if (!id) return false;
+  return botMessageKeys.has(String(id));
+}
+
 function unwrap(message) {
   let cur = message;
   for (let i = 0; i < 8 && cur; i++) {
@@ -154,7 +160,7 @@ function clearOldMessages() {
 
 setInterval(clearOldMessages, 3600000);
 
-module.exports = { addBotMessage, registerBotJids, isBotMessageReplied, clearOldMessages };
+module.exports = { addBotMessage, registerBotJids, isBotMessage, isBotMessageReplied, clearOldMessages };
 
 });
 

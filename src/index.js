@@ -1,3 +1,19 @@
+// Suppress noisy libsignal session lifecycle logs that are printed via console.
+(() => {
+  const noisy = /^(Closing session:|Removing old closed session:)/;
+  for (const method of ['info', 'log', 'warn']) {
+    const original = console[method];
+    if (typeof original !== 'function') continue;
+    console[method] = (...args) => {
+      try {
+        const first = args[0];
+        if (typeof first === 'string' && noisy.test(first)) return;
+      } catch {}
+      return original.apply(console, args);
+    };
+  }
+})();
+
 const config = require('./config');
 const logger = require('./logger');
 const { connect } = require('./whatsapp/connection');

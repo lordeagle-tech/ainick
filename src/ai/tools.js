@@ -9391,4 +9391,4 @@ async function toolWorkspaceZip(args, ctx) {
 }
 
 
-module.exports = { getToolsFor, executeTool, cancelBuild, isBuildRunning, rememberChatImage, getLastChatImage };
+module.exports = { getToolsFor, executeTool, cancelBuild, isBuildRunning, rememberChatImage, getLastChatImage, toolUnlockViewOnce };

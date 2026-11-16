@@ -193,7 +193,8 @@ const config = {
         apiKeys: String(process.env.GROQ_API_KEY || '').split(',').map(k => k.trim()).filter(Boolean),
         model: process.env.GROQ_MODEL || 'llama-3.3-70b-versatile',
         visionModel: process.env.GROQ_VISION_MODEL || 'qwen/qwen3.8-27b',
-        fallbackModel: process.env.GROQ_FALLBACK_MODEL || 'llama-3.1-8b-instant',
+        // Keep fallback configurable; default to primary model to avoid 404s from deprecated fallback IDs.
+        fallbackModel: process.env.GROQ_FALLBACK_MODEL || process.env.GROQ_MODEL || 'llama-3.3-70b-versatile',
         style: 'openai',
       },
       // Google Gemini — OpenAI-compatible endpoint. Set GEMINI_API_KEY or GOOGLE_API_KEY.

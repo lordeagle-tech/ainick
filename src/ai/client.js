@@ -584,11 +584,18 @@ class AIClient {
     // Many models (incl. some Agnes routes / local) only allow a single tool call per turn.
     // Force parallel_tool_calls off so we never hit "This model only supports single tool-calls".
     const safeMessages = sanitizeMessagesForApi(messages);
+    let safeTools = Array.isArray(tools) ? tools : undefined;
+    // Some providers/models (e.g. Groq) enforce a max tools count (commonly 128).
+    // Cap proactively to avoid 400 errors and fallback churn.
+    if (safeTools && safeTools.length > 128) {
+      logger.warn({ provider: provider.name, model, tools: safeTools.length, cap: 128 }, 'too many tools — capping for provider request');
+      safeTools = safeTools.slice(0, 128);
+    }
     const payload = {
       model,
       messages: safeMessages,
-      tools: tools && tools.length ? tools : undefined,
-      tool_choice: tools && tools.length ? 'auto' : undefined,
+      tools: safeTools && safeTools.length ? safeTools : undefined,
+      tool_choice: safeTools && safeTools.length ? 'auto' : undefined,
       parallel_tool_calls: (process.env.AI_PARALLEL_TOOLS || 'false') === 'true',
     };
     let data;

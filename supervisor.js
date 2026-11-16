@@ -1,4 +1,19 @@
 // Pterodactyl-friendly supervisor: restart owner requests cleanly and retry crashes with exponential backoff.
+(() => {
+  const noisy = /^(Closing session:|Removing old closed session:)/;
+  for (const method of ['info', 'log', 'warn']) {
+    const original = console[method];
+    if (typeof original !== 'function') continue;
+    console[method] = (...args) => {
+      try {
+        const first = args[0];
+        if (typeof first === 'string' && noisy.test(first)) return;
+      } catch {}
+      return original.apply(console, args);
+    };
+  }
+})();
+
 const { spawn } = require('child_process');
 let failures = 0;
 let child;
