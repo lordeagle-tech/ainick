@@ -1,36 +1,34 @@
-// ai/tools.js — tool definitions (OpenAI function-calling format) + their real
-// implementations. This is what makes the bot an "agent" rather than a chatbot:
-// the LLM decides which of these to call, we execute them for real, and feed the
-// result back so the model can respond with facts instead of guesses.
 const axios = require('axios');
 const os = require('os');
 const fs = require('fs');
+const logger = require('../logger');
 // Soft-require mathjs so a partial npm install does not crash the whole bot at boot.
 let math = null;
 try {
   const { create, all } = require('mathjs');
   math = create(all, {});
 } catch (e) {
-  console.warn('[tools] mathjs not installed — math_evaluate tool disabled. Run: npm i mathjs');
+  logger.warn({ err: e.message }, 'mathjs not installed; math_evaluate tool disabled');
 }
 
-const economy = require('../features/economy');
-const cardGame = require('../features/cardGame');
-const leveling = require('../features/leveling');
-const canvasFeature = require('../features/canvas');
-const shop = require('../features/shop');
-const marriage = require('../features/marriage');
-const achievements = require('../features/achievements');
-const birthdays = require('../features/birthdays');
+const economy = require('../features').economy;
+const optionalFeatures = require('../features').optionalFeatures;
+const cardGame = optionalFeatures.cardGame;
+const leveling = require('../features').leveling;
+const canvasFeature = require('../features').canvas;
+const shop = optionalFeatures.shop;
+const marriage = optionalFeatures.marriage;
+const achievements = require('../features').achievements;
+const birthdays = require('../features').birthdays;
 let moderation = null;
-try { moderation = require('../features/moderation'); } catch { moderation = null; }
+try { moderation = require('../features').moderation; } catch { moderation = null; }
 const _mod = () => moderation || {
   getSettings: () => ({}), updateSettings: () => ({}),
   addWarning: () => 0, getWarnings: () => 0, clearWarnings: () => {},
 };
-const groupAdmin = require('../features/groupAdmin');
-const github = require('../features/github');
-const githubTokenVault = require('../features/githubTokenVault');
+const groupAdmin = require('../features').groupAdmin;
+const github = require('../features').github;
+const githubTokenVault = require('../features').githubTokenVault;
 /** Per-user token (DM-saved) first, then one-shot arg, then server default. Never share across users. */
 function resolveGithubToken(args, ctx) {
   const fromUser = githubTokenVault.get(ctx?.senderJid) || githubTokenVault.get(ctx?.originalSenderJid);
@@ -44,18 +42,18 @@ function resolveGithubToken(args, ctx) {
   );
 }
 
-const stickers = require('../features/stickers');
-const reminders = require('../features/reminders');
-const notes = require('../features/notes');
-const afk = require('../features/afk');
-const axonTools = require('../features/axon_tools');
-const channelTools = require('../features/channelTools');
-const todos = require('../features/todos');
+const stickers = require('../features').stickers;
+const reminders = require('../features').reminders;
+const notes = require('../features').notes;
+const afk = require('../features').afk;
+const axonTools = require('../features').axon_tools;
+const channelTools = require('../features').channelTools;
+const todos = require('../features').todos;
 const perms = require('../utils/permissions');
-const roles = require('../features/roles');
+const roles = require('../features').roles;
 const config = require('../config');
 const { fmtCurrency, numFromJid } = require('../utils/helpers');
-const names = require('../features/names');
+const names = require('../features').names;
 const { parseFiles, buildZip } = require('../core/siteBuilder');
 function isAdminUser(ctx) {
   try {
@@ -95,47 +93,44 @@ async function taskProgress(ctx, text) {
 
 const localPreview = require('../core/localPreview');
 const lastBuild = require('../core/lastBuild');
-const logger = require('../logger');
-const gamehost = require('../features/gamehost');
-const games = require('../features/games');
-const brokenapi = require('../features/brokenapi');
-const mediaDownloader = require('../features/mediaDownloader');
-const cryptoZip = require('../features/cryptoZip');
-const siteRunner = require('../features/siteRunner');
-const genQuota = require('../features/genQuota');
-const dailyReport = require('../features/dailyReport');
-const funFeed = require('../features/funFeed');
-const zipMemory = require('../features/zipMemory');
-const ownerCleanup = require('../features/ownerCleanup');
-const devTools = require('../features/devTools');
-const tts = require('../features/tts');
-const messageTracker = require('../features/messageTracker');
-const fileOps = require('../features/fileOps');
-const gitOps = require('../features/gitOps');
-const usageLimiter = require('../features/usageLimiter');
-const nf = require('../features/newFeatures');
-const fixer = require('../features/fixer');
-const dynatools = require('../features/dynatools');
-const websearch2 = require('../features/websearch2');
-const browser = require('../features/browser');
-const bbcNews = require('../features/bbcNews');
-const quickGames = require('../features/quickGames');
+const gamehost = optionalFeatures.gamehost;
+const games = require('../features').games;
+const brokenapi = require('../features').brokenapi;
+const mediaDownloader = require('../features').mediaDownloader;
+const cryptoZip = optionalFeatures.cryptoZip;
+const siteRunner = require('../features').siteRunner;
+const genQuota = require('../features').genQuota;
+const dailyReport = require('../features').dailyReport;
+const funFeed = require('../features').funFeed;
+const zipMemory = require('../features').zipMemory;
+const ownerCleanup = require('../features').ownerCleanup;
+const devTools = optionalFeatures.devTools;
+const tts = require('../features').tts;
+const messageTracker = require('../features').messageTracker;
+const fileOps = require('../features').fileOps;
+const gitOps = require('../features').gitOps;
+const usageLimiter = optionalFeatures.usageLimiter;
+const nf = optionalFeatures.newFeatures;
+const fixer = require('../features').fixer;
+const dynatools = optionalFeatures.dynatools;
+const websearch2 = require('../features').websearch2;
+const browser = require('../features').browser;
+const bbcNews = require('../features').bbcNews;
+const quickGames = optionalFeatures.quickGames;
 const personalas = require('../ai/personalas');
 const { Collection } = require('../db');
 const textStyler = require('../utils/textStyler');
 const chatFont = require('../utils/chatFont');
 // client.js imports this module, so provider helpers are required lazily inside
 // provider tools to avoid a CommonJS circular-dependency initialization bug.
-const internetTools = require('../features/internetTools');
-const scrapers = require('../features/scrapers');
-const pokemonHunt = require('../features/pokemonHunt');
-const obsidian = require('../features/obsidian');
+const internetTools = require('../features').internetTools;
+const scrapers = optionalFeatures.scrapers;
+const pokemonHunt = optionalFeatures.pokemonHunt;
+const obsidian = require('../features').obsidian;
 const mcpManager = require('../mcp/mcpManager');
 
-// ---------------------------------------------------------------------------
 // Schemas exposed to the model. `group` schemas are only advertised when the
 // chat is actually a group (see getToolsFor in client.js).
-// ---------------------------------------------------------------------------
 const GENERAL_TOOLS = [
 
   {
@@ -1262,7 +1257,7 @@ const GENERAL_TOOLS = [
       parameters: {
         type: 'object',
         properties: {
-          id: { type: 'string', description: 'Persona id (broken, axon, sage, joker, butler, roleplay) or "default" to reset.' },
+          id: { type: 'string', description: 'Persona id (classic, axon, sage, joker, butler, roleplay) or "default" to reset.' },
         },
       },
     },
@@ -3416,9 +3411,7 @@ function getToolsFor(isGroup) {
   return base.filter(allowed);
 }
 
-// ---------------------------------------------------------------------------
 // Implementations. `ctx` = { sock, chatId, senderJid, isGroup, groupMeta, sendFile }
-// ---------------------------------------------------------------------------
 
 async function toolCalculate(args) {
   try {
@@ -3918,15 +3911,15 @@ Use a real structure such as src/, tests/, config/, scripts/, docs/ and package 
     await taskProgress(ctx, `✅ Zip ready (${Math.round(zipSize/1024)} KB) — sending…`);
     // quiet: only final ZIP
     try {
-      if (!global.__brokenLastBuildZipPath) global.__brokenLastBuildZipPath = new Map();
+      if (!global.__nickAiLastBuildZipPath) global.__nickAiLastBuildZipPath = new Map();
       // Durable copy under storage/builds (survives restarts) + temp mirror for deploy
       const durable = lastBuild.saveZip(ctx.chatId, zipPath, { name, kind });
       const pathMod = require('path');
       const osMod = require('os');
-      const tmpMirror = pathMod.join(osMod.tmpdir(), `broken_last_${ctx.chatId.replace(/[^a-z0-9]/gi,'_')}_${name}.zip`);
+      const tmpMirror = pathMod.join(osMod.tmpdir(), `nick_ai_last_${ctx.chatId.replace(/[^a-z0-9]/gi,'_')}_${name}.zip`);
       try { fs.copyFileSync(durable, tmpMirror); } catch { try { fs.copyFileSync(zipPath, tmpMirror); } catch {} }
-      global.__brokenLastBuildZipPath.set(ctx.chatId, fs.existsSync(durable) ? durable : (fs.existsSync(tmpMirror) ? tmpMirror : zipPath));
-      ctx._lastBuildZipPath = global.__brokenLastBuildZipPath.get(ctx.chatId);
+      global.__nickAiLastBuildZipPath.set(ctx.chatId, fs.existsSync(durable) ? durable : (fs.existsSync(tmpMirror) ? tmpMirror : zipPath));
+      ctx._lastBuildZipPath = global.__nickAiLastBuildZipPath.get(ctx.chatId);
       ctx._lastBuildKind = kind;
     } catch {}
     const sent = await ctx.sendFile(
@@ -3976,8 +3969,8 @@ Use a real structure such as src/, tests/, config/, scripts/, docs/ and package 
       // Auto-deploy pure static websites to Netlify when token is configured
       if (kind === 'website' && (process.env.NETLIFY_TOKEN || require('../config').integrations?.netlifyToken)) {
         try {
-          const netlify = require('../features/netlify');
-          const browserFeat = require('../features/browser');
+          const netlify = require('../features').netlify;
+          const browserFeat = require('../features').browser;
           const zipForDeploy = ctx._lastBuildZipPath || zipPath;
           const dep = await netlify.deployStatic({ zipPath: zipForDeploy, siteName: name });
           if (dep.ok && dep.url) {
@@ -4115,7 +4108,7 @@ async function toolPreviewWebsite(args, ctx) {
 
 
 async function toolPlanSubagents(args) {
-  const subagents = require('../features/subagents');
+  const subagents = require('../features').subagents;
   const workers = subagents.plan(args.task, args.features);
   return {
     ok: true,
@@ -4125,7 +4118,7 @@ async function toolPlanSubagents(args) {
 }
 
 async function toolRunSubagents(args, ctx) {
-  const subagents = require('../features/subagents');
+  const subagents = require('../features').subagents;
   // Progress/reasoning only to owner DM
   const send = (text) => adminProgress(ctx, text);
   const workers = subagents.plan(args.task, args.features);
@@ -4155,7 +4148,7 @@ async function toolRunSubagents(args, ctx) {
 }
 
 async function toolRepoWork(args, ctx) {
-  const repoAgent = require('../features/repoAgent');
+  const repoAgent = require('../features').repoAgent;
   const token = resolveGithubToken(args, ctx) || null;
   try { require('../logger').info({ repo: args.repo, action: args.action }, 'repo_work start'); } catch {}
   if (!token) {
@@ -4191,7 +4184,7 @@ async function toolRepoWork(args, ctx) {
 }
 
 async function toolRepoMemory(args, ctx) {
-  const userWorkspace = require('../features/userWorkspace');
+  const userWorkspace = require('../features').userWorkspace;
   const mem = userWorkspace.getMemory(ctx.senderJid);
   const root = userWorkspace.workspaceRoot(ctx.senderJid);
   return {
@@ -4225,8 +4218,8 @@ async function toolPushToGithub(args, ctx) {
       return { ok: true, ...result };
     }
     // Else push from user sandbox last repo
-    const userWorkspace = require('../features/userWorkspace');
-    const repoAgent = require('../features/repoAgent');
+    const userWorkspace = require('../features').userWorkspace;
+    const repoAgent = require('../features').repoAgent;
     const mem = userWorkspace.getMemory(ctx.senderJid);
     const folder = args.folder || mem.lastRepo?.path || (mem.repos && mem.repos[0] && mem.repos[0].path);
     if (folder) {
@@ -4283,7 +4276,7 @@ async function toolResizeImage(args, ctx) {
 async function toolConvertAudio(args, ctx) {
   if (!ctx.audioBuffer) return { ok: false, error: 'No audio found in this message or the one you replied to.' };
   try {
-    const audioConvert = require('../features/audioConvert');
+    const audioConvert = optionalFeatures.audioConvert;
     const { file, format } = await audioConvert.convert(ctx.audioBuffer, { format: args.format, bitDepth: args.bitDepth });
     const sent = await ctx.sendFile(file, `converted.${format}`, `🎚️ Converted to ${format.toUpperCase()}${args.bitDepth ? ` (${args.bitDepth}-bit)` : ''}`);
     fs.unlink(file, () => {});
@@ -4371,15 +4364,15 @@ async function toolGenerateImage(args, ctx) {
 async function toolSearchDownloadVideo(args, ctx) {
   const q = String(args?.query || '').trim();
   if (!q) return { ok: false, error: 'What should I search for?' };
-  const mediaDownloader = require('../features/mediaDownloader');
-  const internetTools = require('../features/internetTools');
+  const mediaDownloader = require('../features').mediaDownloader;
+  const internetTools = require('../features').internetTools;
   let results = [];
   try {
     const search = await internetTools.youtubeSearch(q, 5);
     results = search?.results || search?.items || (Array.isArray(search) ? search : []);
   } catch (e) {
     try {
-      const scrapers = require('../features/scrapers');
+      const scrapers = optionalFeatures.scrapers;
       results = await scrapers.youtubeSearch(q, 5);
     } catch (e2) {
       return { ok: false, error: 'YouTube search failed: ' + (e.message || e2.message) };
@@ -4410,7 +4403,7 @@ async function toolSearchDownloadVideo(args, ctx) {
 async function toolDownloadVideoUrl(args, ctx) {
   const url = String(args?.url || '').trim();
   if (!url) return { ok: false, error: 'Need a video URL.' };
-  const mediaDownloader = require('../features/mediaDownloader');
+  const mediaDownloader = require('../features').mediaDownloader;
   try {
     const meta = await mediaDownloader.downloadMedia(url);
     if (!meta?.buffer && !meta?.downloadUrl) return { ok: false, error: 'No downloadable video at that URL.' };
@@ -4642,7 +4635,7 @@ function buildSimplePdf(title, body) {
 
 
 async function toolGofileUpload(args, ctx) {
-  const gofile = require('../features/gofile');
+  const gofile = optionalFeatures.gofile;
   const lastBuild = require('../core/lastBuild');
   try {
     let filePath = args?.filePath ? String(args.filePath) : null;
@@ -4654,7 +4647,7 @@ async function toolGofileUpload(args, ctx) {
     }
     // Prefer in-module lastBuild from build pipeline
     const lb = (typeof lastBuild.get === 'function' ? null : null);
-    const built = global.__brokenLastBuildZip?.get?.(ctx.chatId) || null;
+    const built = global.__nickAiLastBuildZip?.get?.(ctx.chatId) || null;
 
     if (filePath) {
       const path = require('path');
@@ -4675,7 +4668,7 @@ async function toolGofileUpload(args, ctx) {
     }
 
     // Last build zip path stored during build
-    const zipPath = ctx._lastBuildZipPath || global.__brokenLastBuildZipPath?.get?.(ctx.chatId);
+    const zipPath = ctx._lastBuildZipPath || global.__nickAiLastBuildZipPath?.get?.(ctx.chatId);
     if (zipPath && fs.existsSync(zipPath)) {
       const res = await gofile.upload(zipPath, fileName || require('path').basename(zipPath));
       if (res.ok && res.url) await ctx.sendText?.(`📦 GoFile: ${res.url}`);
@@ -4689,14 +4682,14 @@ async function toolGofileUpload(args, ctx) {
 }
 
 async function toolDeployNetlify(args, ctx) {
-  const netlify = require('../features/netlify');
-  const browser = require('../features/browser');
+  const netlify = require('../features').netlify;
+  const browser = require('../features').browser;
   const fs = require('fs');
   try {
     if (!netlify.isConfigured()) {
       return { ok: false, error: 'NETLIFY_TOKEN missing in env. Add a Netlify personal access token and restart.' };
     }
-    let zipPath = args?.zipPath || ctx._lastBuildZipPath || global.__brokenLastBuildZipPath?.get?.(ctx.chatId);
+    let zipPath = args?.zipPath || ctx._lastBuildZipPath || global.__nickAiLastBuildZipPath?.get?.(ctx.chatId);
     let zipBuffer = null;
     if (ctx.quotedZipBuffer) zipBuffer = ctx.quotedZipBuffer;
     if (!zipBuffer && ctx.documentBuffer && /\.zip$/i.test(ctx.attachmentInfo?.fileName || '')) {
@@ -4761,13 +4754,13 @@ async function toolDeployNetlify(args, ctx) {
 
 
 async function toolDeployVercel(args, ctx) {
-  const vercel = require('../features/vercel');
+  const vercel = require('../features').vercel;
   const fs = require('fs');
   try {
     if (!vercel.isConfigured()) {
       return { ok: false, error: 'VERCEL_TOKEN missing in env. Add a Vercel token (Account Settings → Tokens) and restart.' };
     }
-    let zipPath = args?.zipPath || ctx._lastBuildZipPath || global.__brokenLastBuildZipPath?.get?.(ctx.chatId);
+    let zipPath = args?.zipPath || ctx._lastBuildZipPath || global.__nickAiLastBuildZipPath?.get?.(ctx.chatId);
     let zipBuffer = null;
     if (ctx.quotedZipBuffer) zipBuffer = ctx.quotedZipBuffer;
     if (!zipBuffer && ctx.documentBuffer && /\.zip$/i.test(ctx.attachmentInfo?.fileName || '')) {
@@ -4879,7 +4872,7 @@ async function toolGenerateDocument(args, ctx) {
 
 async function toolJoinGroup(args, ctx) {
   try {
-    const roles = require('../features/roles');
+    const roles = require('../features').roles;
     const perms = require('../utils/permissions');
     const candidates = [
       ctx.senderJid, ctx.actorJid, ctx.originalSenderJid, ctx.senderPhone,
@@ -5052,7 +5045,7 @@ async function toolInstallDependency(args, ctx) {
   // Browser / media packages install into project node_modules only — no sudo, no owner gate.
   let isBrowserPkg = false;
   try {
-    const browserFeat = require('../features/browser');
+    const browserFeat = require('../features').browser;
     isBrowserPkg = ecosystem === 'npm' && browserFeat.isBrowserNpmPackage?.(pkg);
   } catch {
     const n = pkg.toLowerCase();
@@ -5071,7 +5064,7 @@ async function toolInstallDependency(args, ctx) {
     // Prefer direct local install for browser packages (bypasses owner-gated shell)
     if (isBrowserPkg) {
       try {
-        const browserFeat = require('../features/browser');
+        const browserFeat = require('../features').browser;
         if (browserFeat.runNpmInstallLocal) {
           const r = await browserFeat.runNpmInstallLocal([npmSpec]);
           if (!r.ok) return { ok: false, error: r.error || r.stderr || 'npm install failed', ...r };
@@ -5865,7 +5858,7 @@ async function toolGroupSuspend(args, ctx) {
   if (denial) return { ok: false, error: denial };
   const botDenial = requireBotAdmin(ctx);
   if (botDenial) return { ok: false, error: botDenial };
-  const suspend = require('../features/suspend');
+  const suspend = require('../features').suspend;
   let target = null;
   if (args?.userJid) target = resolveTargetJid(args.userJid, ctx);
   else if (args?.phoneNumber) {
@@ -5883,7 +5876,7 @@ async function toolGroupSuspend(args, ctx) {
 async function toolGroupUnsuspend(args, ctx) {
   const denial = requireGroupAdmin(ctx);
   if (denial) return { ok: false, error: denial };
-  const suspend = require('../features/suspend');
+  const suspend = require('../features').suspend;
   let target = null;
   if (args?.userJid) target = resolveTargetJid(args.userJid, ctx);
   else if (args?.phoneNumber) {
@@ -6029,7 +6022,7 @@ async function toolExportGroupVcf(args, ctx) {
     const meta = ctx.groupMeta || (await ctx.sock.groupMetadata(ctx.chatId).catch(() => null));
     const parts = meta?.participants || [];
     if (!parts.length) return { ok: false, error: 'No participants found.' };
-    const names = require('../features/names');
+    const names = require('../features').names;
     const lines = [];
     let count = 0;
     for (const p of parts) {
@@ -6412,8 +6405,8 @@ async function toolStartGame(args, ctx) {
   const valid = ['trivia','scramble','guess','riddle','hangman','ttt','wcg','emoji','wyr','wordgrid','fastest','mystery','missing','brain','movie','music','lyrics','country','teamquiz','streak','whoami','picture','emojistory','challenge30','blackjack','coinflip','spellingbee'];
   if (!valid.includes(type)) return { ok: false, error: 'Unknown game.' };
   if (!ctx.isGroup) return { ok: false, error: 'Games only work inside a group.' };
-  if (games.current(ctx.chatId) || require('../features/socialGames').current(ctx.chatId)) return { ok: false, error: 'A game is already running in this chat.' };
-  const social = require('../features/socialGames');
+  if (games.current(ctx.chatId) || optionalFeatures.socialGames.current(ctx.chatId)) return { ok: false, error: 'A game is already running in this chat.' };
+  const social = optionalFeatures.socialGames;
   let r, ttl = 30000;
   if (['fastest','mystery','brain','movie','music','country','whoami','picture','lyrics','emojistory'].includes(type)) { r=await social.start(ctx.chatId,ctx.senderJid,type); ttl=r.ttl; }
   else if (type==='missing') { r=social.startMissing(ctx.chatId,ctx.senderJid); ttl=r.ttl; }
@@ -6499,7 +6492,7 @@ async function toolListRoles(args, ctx) {
 
 
 async function toolDownloadMedia(args, ctx) {
-  const mediaDownloader = require('../features/mediaDownloader');
+  const mediaDownloader = require('../features').mediaDownloader;
   const url = String(args.url || args.link || '').trim();
   if (!url) return { ok: false, error: 'Need a social media URL.' };
   const uid = numFromJid(ctx.senderJid) || String(ctx.senderJid);
@@ -6511,7 +6504,7 @@ async function toolDownloadMedia(args, ctx) {
   // path rather than downloading a video and converting it afterwards.
   if (args?.asAudio === true) {
     try {
-      const ytdlp = require('../features/ytdlp');
+      const ytdlp = require('../features').ytdlp;
       const audio = await ytdlp.downloadAudio(url);
       if (audio.ok) {
         const name = `${String(audio.title || 'audio').replace(/[^\w.-]+/g, '_').slice(0, 50)}.mp3`;
@@ -6534,7 +6527,7 @@ async function toolDownloadMedia(args, ctx) {
   // path rather than downloading a video and converting afterwards.
   if (args?.asAudio === true) {
     try {
-      const mp = require('../features/mediaProviders');
+      const mp = require('../features').mediaProviders;
       const audio = await mp.downloadAudio(url);
       if (!audio.ok) return { ok: false, error: audio.error };
       const name = `${String(audio.title || 'audio').replace(/[^\w.-]+/g, '_').slice(0, 50)}.mp3`;
@@ -6616,7 +6609,7 @@ async function toolDownloadMedia(args, ctx) {
 
 async function toolVideoToMp3(args, ctx) {
   try {
-    const mp = require('../features/mediaProviders');
+    const mp = require('../features').mediaProviders;
     let buffer = null;
     let title = 'audio';
 
@@ -6684,7 +6677,7 @@ async function toolAutolinkToggle(args, ctx) {
 
 async function toolTelegramStickerPack(args, ctx) {
   try {
-    const telegramStickers = require('../features/telegramStickers');
+    const telegramStickers = require('../features').telegramStickers;
     const pack = await telegramStickers.downloadPack(args.urlOrName, { maxStickers: Math.min(30, Number(args.maxStickers) || 15) });
     for (const s of pack.stickers) {
       try { await ctx.sock.sendMessage(ctx.chatId, { sticker: s.buffer }); } catch {}
@@ -6697,7 +6690,7 @@ async function toolTelegramStickerPack(args, ctx) {
 
 
 async function toolHostFile(args, ctx) {
-  const localHost = require('../features/localHost');
+  const localHost = require('../features').localHost;
   const fs = require('fs');
   const path = require('path');
   const os = require('os');
@@ -6720,7 +6713,7 @@ async function toolHostFile(args, ctx) {
 }
 
 async function toolHostImageLink(args, ctx) {
-  const localHost = require('../features/localHost');
+  const localHost = require('../features').localHost;
   const buf = ctx.imageBuffer || ctx.quotedImageBuffer;
   if (!buf) return { ok: false, error: 'Send or reply to an image first.' };
   try {
@@ -6737,7 +6730,7 @@ async function toolHostImageLink(args, ctx) {
 }
 
 async function toolBrowserClick(args, ctx) {
-  const browserFeat = require('../features/browser');
+  const browserFeat = require('../features').browser;
   try {
     const r = await browserFeat.click(args.url, args.selector, { type: args.type });
     if (r.screenshotPath && ctx.sendImage) {
@@ -6797,7 +6790,7 @@ async function toolBrowserType(args, ctx) {
 }
 
 async function toolBrowserScreenRecord(args, ctx) {
-  const browserFeat = require('../features/browser');
+  const browserFeat = require('../features').browser;
   const fs = require('fs');
   try {
     if (ctx.sendProgress) await ctx.sendProgress(`🎥 Recording ${String(args.url).slice(0, 80)}…`).catch(() => {});
@@ -6837,7 +6830,7 @@ async function toolBrowserScreenRecord(args, ctx) {
 
 async function toolCallSettings(args, ctx) {
   if (!perms.isOwner(ctx.senderJid)) return { ok: false, error: 'Owner only.' };
-  const callHandler = require('../features/callHandler');
+  const callHandler = require('../features').callHandler;
   const patch = {};
   if (args.autoAnswer !== undefined) patch.autoAnswer = !!args.autoAnswer;
   if (args.autoReject !== undefined) patch.autoReject = !!args.autoReject;
@@ -6880,7 +6873,7 @@ async function toolSendAnyFile(args, ctx) {
 
 
 async function toolWebLogin(args, ctx) {
-  const webAutomate = require('../features/webAutomate');
+  const webAutomate = optionalFeatures.webAutomate;
   const fs = require('fs');
   if (!args?.url) return { ok: false, error: 'Need url.' };
   if (!args.email && !args.username && !args.password) {
@@ -6914,7 +6907,7 @@ async function toolWebLogin(args, ctx) {
 }
 
 async function toolWebAutomate(args, ctx) {
-  const webAutomate = require('../features/webAutomate');
+  const webAutomate = optionalFeatures.webAutomate;
   const fs = require('fs');
   if (!args?.url) return { ok: false, error: 'Need url.' };
   try {
@@ -7728,7 +7721,7 @@ async function toolListZipFiles(args, ctx) {
 
 async function toolHttpApi(args, ctx) {
   const axios = require('axios');
-  const webAutomate = require('../features/webAutomate');
+  const webAutomate = optionalFeatures.webAutomate;
   try {
     const url = webAutomate.safeUrl(args.url);
     const method = String(args.method || 'GET').toUpperCase();
@@ -7738,7 +7731,7 @@ async function toolHttpApi(args, ctx) {
     const res = await axios({
       method,
       url,
-      headers: { 'User-Agent': 'BrokenBot/1.2', Accept: 'application/json, text/plain, */*', ...headers },
+      headers: { 'User-Agent': 'NickAI/4.0', Accept: 'application/json, text/plain, */*', ...headers },
       params: args.query || undefined,
       data: ['POST', 'PUT', 'PATCH'].includes(method) ? body : undefined,
       timeout: 30000,
@@ -7755,13 +7748,12 @@ async function toolHttpApi(args, ctx) {
 }
 
 async function toolListRuntimeTools(args, ctx) {
-  const dynatools = require('../features/dynatools');
-  return { ok: true, tools: dynatools.listCustom() };
+  return { ok: true, tools: optionalFeatures.dynatools.listCustom() };
 }
 
 
 async function toolHostProject(args, ctx) {
-  const projectRunner = require('../features/projectRunner');
+  const projectRunner = require('../features').projectRunner;
   const pathMod = require('path');
   const fs = require('fs');
   const send = async (m) => {
@@ -7800,7 +7792,7 @@ async function toolHostProject(args, ctx) {
 
   if (!root && !zipBuffer && !zipPath) {
     try {
-      const userWorkspace = require('../features/userWorkspace');
+      const userWorkspace = require('../features').userWorkspace;
       const mem = userWorkspace.getMemory?.(ctx.senderJid) || {};
       const last = (mem.repos || [])[0];
       if (last?.path && fs.existsSync(last.path)) root = last.path;
@@ -7844,8 +7836,8 @@ async function toolHostProject(args, ctx) {
 }
 
 async function toolHostStatus() {
-  const localHost = require('../features/localHost');
-  const projectRunner = require('../features/projectRunner');
+  const localHost = require('../features').localHost;
+  const projectRunner = require('../features').projectRunner;
   return {
     ok: true,
     static: localHost.listHosts(),
@@ -7854,8 +7846,8 @@ async function toolHostStatus() {
 }
 
 async function toolHostStop(args) {
-  const localHost = require('../features/localHost');
-  const projectRunner = require('../features/projectRunner');
+  const localHost = require('../features').localHost;
+  const projectRunner = require('../features').projectRunner;
   const id = String(args.id || '').trim();
   if (id === 'all') {
     projectRunner.stop('all');
@@ -7986,7 +7978,7 @@ function _ws(ctx) {
   // absolute project path.
   try {
     if (isDevContext(ctx)) return FALLBACK_ROOT;
-    const uw = require('../features/userWorkspace');
+    const uw = require('../features').userWorkspace;
     return uw.workspaceRoot(ctx?.senderJid) || FALLBACK_ROOT;
   } catch { return FALLBACK_ROOT; }
 }
@@ -8513,9 +8505,7 @@ async function executeTool(name, args, ctx) {
 }
 
 
-// ---------------------------------------------------------------------------
 // Extended browser + scrape handlers
-// ---------------------------------------------------------------------------
 
 async function _readScreenshot(ctx, filePath, caption) {
   if (!filePath) return { ok: false, error: 'No screenshot path returned by browser.' };
@@ -8578,7 +8568,7 @@ async function toolBrowserScreenshot(args, ctx) {
 }
 
 async function toolBrowserDiagnose(args, ctx) {
-  const browserFeat = require('../features/browser');
+  const browserFeat = require('../features').browser;
   try {
     let report = await browserFeat.diagnose();
     if (report.ok || args?.repair === false) return { ok: report.ok, report };
@@ -8665,9 +8655,7 @@ async function toolWebSearchNews(args) {
   }
 }
 
-// ---------------------------------------------------------------------------
 // Browser login/signup + persona + custom-tool management handlers
-// ---------------------------------------------------------------------------
 
 async function _readScreenshot(ctx, filePath, caption) {
   if (!filePath) return { ok: false, error: 'No screenshot path.' };
@@ -8754,12 +8742,12 @@ function _personaStore_() {
 async function toolPersonaList(args, ctx) {
   const list = personalas.list();
   let active = personalas.defaultId();
-  try { active = _personaStore_().get(String(ctx?.senderJid || '')) || active; } catch {}
+  try { active = personalas.normalizeId(_personaStore_().get(String(ctx?.senderJid || '')) || active); } catch {}
   return { ok: true, default: personalas.defaultId(), active, personas: list };
 }
 
 async function toolPersonaSet(args, ctx) {
-  const id = (args?.id || 'default').toLowerCase().trim();
+  const id = personalas.normalizeId((args?.id || 'default').toLowerCase().trim());
   const sender = String(ctx?.senderJid || '');
   if (!sender) return { ok: false, error: 'No user context.' };
   if (id === 'default' || !id || id === 'reset') {
@@ -8795,19 +8783,17 @@ async function toolDeleteCustomTool(args) {
   }
 }
 
-// ---------------------------------------------------------------------------
 // New features: health_status, react_to_message, recurring_reminder,
 // send_video_file, mcp_status
-// ---------------------------------------------------------------------------
 
 async function toolHealthStatus() {
   const mem = process.memoryUsage();
   const uptimeSec = process.uptime();
   const hours = Math.floor(uptimeSec / 3600);
   const mins = Math.floor((uptimeSec % 3600) / 60);
-  const localHost = require('../features/localHost');
-  const projectRunner = require('../features/projectRunner');
-  const subagents = require('../features/subagents');
+  const localHost = require('../features').localHost;
+  const projectRunner = require('../features').projectRunner;
+  const subagents = require('../features').subagents;
   let hosts, running;
   try { hosts = localHost.listHosts(); } catch { hosts = { error: 'failed' }; }
   try { running = projectRunner.listRunning(); } catch { running = []; }
@@ -8919,10 +8905,8 @@ async function toolMcpStatus() {
   } catch (e) { return { ok: false, error: e.message }; }
 }
 
-// ---------------------------------------------------------------------------
 // More tools: send_location, analyze_image, group_members_list,
 // check_date_time, sleep
-// ---------------------------------------------------------------------------
 
 async function toolSendLocation(args, ctx) {
   if (args?.latitude == null || args?.longitude == null) return { ok: false, error: 'latitude and longitude required.' };
@@ -9047,8 +9031,8 @@ async function toolLegacyScraperSearch(args) {
 async function toolAgentCapabilities(args, ctx) {
   let netlifyOk = false;
   let vercelOk = false;
-  try { netlifyOk = !!require('../features/netlify').isConfigured(); } catch {}
-  try { vercelOk = !!require('../features/vercel').isConfigured(); } catch {}
+  try { netlifyOk = !!require('../features').netlify.isConfigured(); } catch {}
+  try { vercelOk = !!require('../features').vercel.isConfigured(); } catch {}
   return {
     ok: true,
     mode: 'agent',
@@ -9151,12 +9135,10 @@ async function toolImageGenerator(args, ctx) { return axonTools.imageGenerator({
 async function toolRunCommand(args, ctx) { return axonTools.runCommand(args); }
 async function toolGroupMembersListX(args, ctx) { return axonTools.groupMembersList({ ...args, ctx }); }
 
-// ---------------------------------------------------------------------------
 // Full GitHub ops handlers (added: github_create_repo, github_list_repos,
 // github_get_repo, github_add_collaborator, github_create_issue,
 // github_list_issues, github_read_file, github_upsert_file, github_search_repos)
 // + file_send_from_url and workspace_zip
-// ---------------------------------------------------------------------------
 
 function resolveGhToken(args, ctx) {
   return args?.accessToken || (!ctx?.isGroup && githubTokenVault.get(ctx?.senderJid)) || config.github?.defaultToken || '';
@@ -9357,7 +9339,7 @@ async function toolFileSendFromUrl(args, ctx) {
 
 async function toolWorkspaceZip(args, ctx) {
   try {
-    const userWorkspace = require('../features/userWorkspace');
+    const userWorkspace = require('../features').userWorkspace;
     const fs = require('fs');
     const path = require('path');
     const AdmZip = require('adm-zip');

@@ -1,4 +1,4 @@
-const { qwenChat } = require('../src/features/scrapers');
+const { qwenChat } = require('../src/features').scrapers;
 
 (async () => {
   const prompt = process.argv.slice(2).join(' ') || 'Reply with exactly: QWEN OK';

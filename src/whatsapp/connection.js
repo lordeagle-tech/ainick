@@ -1,6 +1,3 @@
-// whatsapp/connection.js — Baileys connect, pairing, reconnect (avoids ghost/401 loops).
-// Fixed: pairing code now waits for the user to link (long grace window) instead of
-// timing out and immediately requesting a new code.
 const baileys = require('@lordeagle21/baileys');
 const {
   default: makeWASocket,
@@ -10,9 +7,9 @@ const {
   Browsers,
 } = baileys;
 const makeCacheableSignalKeyStore = baileys.makeCacheableSignalKeyStore || ((keys) => keys);
-const qrcode = require('qrcode-terminal');
 const path = require('path');
 const fs = require('fs');
+const readline = require('node:readline/promises');
 const config = require('../config');
 const logger = require('../logger');
 const pino = require('pino');
@@ -38,12 +35,10 @@ let activeSocket = null;
 let connectInProgress = false;
 let pairingRequested = false;
 let pairingInFlight = false;
-/** Timestamp when a pairing code was successfully issued. During the grace window we refuse to spam new codes and we delay reconnects. */
+/** Timestamp when a pairing code was issued; no replacement is requested during its grace window. */
 let pairingCodeIssuedAt = 0;
-/** Last pairing code string (kept so we can re-print it on reconnects during the wait). */
+/** Last pairing code, retained for grace-window state and diagnostics. */
 let lastPairingCode = null;
-let lastPairingPhone = null;
-let pairingReminderTimer = null;
 
 const PING_INTERVAL_MS = Number(process.env.WS_PING_INTERVAL_MS || 45000);
 const PING_TIMEOUT_MS = Number(process.env.WS_PING_TIMEOUT_MS || 25000);
@@ -56,34 +51,45 @@ function sessionsDir() {
   return path.join(process.cwd(), 'sessions');
 }
 
-function isInPairingGrace() {
-  return pairingRequested && pairingCodeIssuedAt > 0 && (Date.now() - pairingCodeIssuedAt) < PAIRING_GRACE_MS;
+function normalizedPhoneNumber(value) {
+  const phone = String(value || '').replace(/\D/g, '');
+  return phone.length >= 8 && phone.length <= 15 ? phone : '';
 }
 
-function clearPairingReminder() {
-  if (pairingReminderTimer) {
-    clearInterval(pairingReminderTimer);
-    pairingReminderTimer = null;
+async function ensurePairingNumber(creds) {
+  if (creds?.registered) return;
+
+  const configuredPhone = normalizedPhoneNumber(config.whatsapp.pairingNumber);
+  if (configuredPhone) {
+    config.whatsapp.pairingNumber = configuredPhone;
+    return;
+  }
+
+  if (!process.stdin.isTTY || !process.stdout.isTTY) {
+    throw new Error('WhatsApp pairing requires an interactive terminal. Start the bot in a terminal to enter the phone number and receive a pairing code.');
+  }
+
+  const prompt = readline.createInterface({ input: process.stdin, output: process.stdout });
+  try {
+    for (let attempt = 1; attempt <= 3; attempt++) {
+      const answer = await prompt.question(
+        'Enter the WhatsApp phone number to link, including country code (not a session ID): ',
+      );
+      const phone = normalizedPhoneNumber(answer);
+      if (phone) {
+        config.whatsapp.pairingNumber = phone;
+        return;
+      }
+      console.log('Enter 8–15 digits including the country code, for example 14155552671.');
+    }
+    throw new Error('A valid WhatsApp phone number is required to request a pairing code.');
+  } finally {
+    prompt.close();
   }
 }
 
-function startPairingReminder() {
-  clearPairingReminder();
-  // Re-print the same code every 25s so the user can still see it if the terminal scrolled.
-  pairingReminderTimer = setInterval(() => {
-    if (!isInPairingGrace() || !lastPairingCode) {
-      clearPairingReminder();
-      return;
-    }
-    const remaining = Math.max(0, Math.ceil((PAIRING_GRACE_MS - (Date.now() - pairingCodeIssuedAt)) / 1000));
-    console.log('\n----------------------------------------');
-    console.log(`  STILL WAITING — enter this code on your phone`);
-    console.log(`  PAIRING CODE:  ${lastPairingCode}`);
-    console.log(`  Phone:         ${lastPairingPhone}`);
-    console.log(`  Time left:     ~${remaining}s`);
-    console.log('  WhatsApp → Linked Devices → Link with phone number');
-    console.log('----------------------------------------\n');
-  }, 25000);
+function isInPairingGrace() {
+  return pairingRequested && pairingCodeIssuedAt > 0 && (Date.now() - pairingCodeIssuedAt) < PAIRING_GRACE_MS;
 }
 
 function archiveDeadSession(reason) {
@@ -127,13 +133,17 @@ async function requestPairing(sock) {
     // Grace expired — allow a fresh code on next successful request.
     pairingRequested = false;
   }
-  if (!config.whatsapp.usePairingCode || !config.whatsapp.pairingNumber) return;
+  if (!config.whatsapp.pairingNumber) {
+    logger.error('WhatsApp pairing number is missing; cannot request a pairing code.');
+    pairingInFlight = false;
+    return;
+  }
   if (sock?.authState?.creds?.registered) return;
 
   pairingInFlight = true;
   const phone = String(config.whatsapp.pairingNumber).replace(/\D/g, '');
-  if (phone.length < 8) {
-    logger.error('WHATSAPP_PAIRING_NUMBER looks invalid (need full country code digits)');
+  if (phone.length < 8 || phone.length > 15) {
+    logger.error('WhatsApp pairing number looks invalid (need 8–15 digits including country code)');
     pairingInFlight = false;
     return;
   }
@@ -152,7 +162,6 @@ async function requestPairing(sock) {
       pairingRequested = true;
       pairingCodeIssuedAt = Date.now();
       lastPairingCode = code;
-      lastPairingPhone = phone;
 
       console.log('\n========================================');
       console.log(`  PAIRING CODE:  ${code}`);
@@ -162,7 +171,6 @@ async function requestPairing(sock) {
       console.log('  Do NOT restart. Just enter the code on your phone.');
       console.log('========================================\n');
       logger.info({ code, phone, graceMs: PAIRING_GRACE_MS }, 'pairing code issued — waiting for link');
-      startPairingReminder();
       pairingInFlight = false;
       return;
     } catch (e) {
@@ -182,6 +190,7 @@ async function connect(onSocket) {
     const dir = sessionsDir();
     fs.mkdirSync(dir, { recursive: true });
     const { state, saveCreds } = await useMultiFileAuthState(dir);
+    await ensurePairingNumber(state.creds);
 
     let version;
     try {
@@ -192,7 +201,7 @@ async function connect(onSocket) {
     }
 
     const baileysLogger = pino({ level: process.env.BAILEYS_LOG_LEVEL || 'silent' });
-    const needsPairing = !state.creds?.registered && config.whatsapp.usePairingCode && config.whatsapp.pairingNumber;
+    const needsPairing = !state.creds?.registered;
 
     const sock = makeWASocket({
       ...(version ? { version } : {}),
@@ -234,7 +243,7 @@ async function connect(onSocket) {
 
       // Official Baileys pattern: request pairing code when the `qr` event fires
       // (even in pairing-code mode the event is emitted as the readiness signal).
-      if (!sock.authState.creds.registered && config.whatsapp.usePairingCode) {
+      if (!sock.authState.creds.registered) {
         if (qr) {
           requestPairing(sock).catch(() => {});
         } else if ((connection === 'connecting' || connection === 'open') && !pairingRequested && !pairingInFlight) {
@@ -243,14 +252,8 @@ async function connect(onSocket) {
         }
       }
 
-      if (qr && !config.whatsapp.usePairingCode) {
-        console.log('\n=== Scan this QR with WhatsApp ===\n');
-        qrcode.generate(qr, { small: true });
-      }
-
       if (connection === 'open') {
         logger.info('✅ Connected to WhatsApp');
-        clearPairingReminder();
         try {
           const me = sock.user?.id || sock.authState?.creds?.me?.id;
           logger.info({ me, owners: config.ownerIds }, 'identity + owners loaded');
@@ -336,10 +339,6 @@ async function connect(onSocket) {
             { delayMs: delay, code: lastPairingCode },
             'still in pairing grace — reconnecting slowly, SAME code stays valid. Enter it on your phone now.'
           );
-          if (lastPairingCode) {
-            console.log(`\n  ⏳ Connection paused while waiting for you to enter code: ${lastPairingCode}`);
-            console.log('  Keep the WhatsApp "Link with phone number" screen open and type the code.\n');
-          }
           if (!reconnectTimer) {
             reconnectTimer = setTimeout(async () => {
               reconnectTimer = null;
@@ -356,7 +355,6 @@ async function connect(onSocket) {
           pairingRequested = false;
           pairingCodeIssuedAt = 0;
           lastPairingCode = null;
-          clearPairingReminder();
           reconnectAttempts = 0;
           if (!reconnectTimer) {
             reconnectTimer = setTimeout(async () => {
@@ -391,7 +389,7 @@ async function connect(onSocket) {
       }
     });
 
-    try { require('../features/callHandler').attach(sock); } catch (e) {
+    try { require('../features').callHandler.attach(sock); } catch (e) {
       logger.warn({ err: e.message }, 'call handler attach failed');
     }
 

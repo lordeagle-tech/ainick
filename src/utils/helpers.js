@@ -1,4 +1,3 @@
-// utils/helpers.js — small pure helpers used across the codebase.
 
 const LINK_RE = /(https?:\/\/|www\.|wa\.me\/|chat\.whatsapp\.com\/)[^\s]+/i;
 

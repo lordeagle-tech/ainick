@@ -1,4 +1,3 @@
-// agent/workspace.js — the agent's real project workspace.
 // Every path is resolved inside WORKSPACE_ROOT. Commands are deliberately allowlisted.
 const fs = require('node:fs');
 const path = require('node:path');

@@ -3,6 +3,7 @@
 const fs = require('fs');
 const path = require('path');
 const { spawn } = require('child_process');
+const logger = require('../logger');
 
 const root = path.resolve(__dirname, '..', '..');
 let running = false;
@@ -30,14 +31,11 @@ async function ensureBrowsers(opts = {}) {
   // Refuse automatic installs unless explicitly forced (tool call or AUTO_INSTALL_BROWSERS).
   const forced = !!(opts && opts.force) || (process.env.AUTO_INSTALL_BROWSERS || '').toLowerCase() === 'true';
   if (!forced) {
-    console.log('[browser] ensureBrowsers skipped — install only on demand (AUTO_INSTALL_BROWSERS=true or force:true)');
     return { ok: false, skipped: true, reason: 'not forced' };
   }
   if (done || running) return { ok: done, running };
   running = true;
   try {
-    console.log('[browser] Preparing Playwright/Puppeteer runtime (explicit request)...');
-
     if (!hasPackage('playwright')) {
       const r = await run(process.platform === 'win32' ? 'npm.cmd' : 'npm', ['install', '--no-save', 'playwright']);
       if (!r.ok) throw new Error(`playwright install failed: ${r.error || r.code}`);
@@ -50,16 +48,14 @@ async function ensureBrowsers(opts = {}) {
 
     // Ensure Chromium/Chrome browser binaries exist for both browser stacks.
     const pw = await run(process.platform === 'win32' ? 'npx.cmd' : 'npx', ['playwright', 'install', 'chromium']);
-    if (!pw.ok) console.warn('[browser] Playwright Chromium install failed; Puppeteer may still work:', pw.error || pw.code);
+    if (!pw.ok) logger.warn({ err: pw.error || pw.code }, 'Playwright Chromium install failed');
 
     const pp = await run(process.platform === 'win32' ? 'npx.cmd' : 'npx', ['puppeteer', 'browsers', 'install', 'chrome']);
-    if (!pp.ok) console.warn('[browser] Puppeteer Chrome install failed:', pp.error || pp.code);
+    if (!pp.ok) logger.warn({ err: pp.error || pp.code }, 'Puppeteer Chrome install failed');
 
     done = true;
-    console.log('[browser] Browser runtime ready. Agent browsing tools can use Playwright/Puppeteer.');
   } catch (err) {
-    console.warn('[browser] Browser setup did not complete:', err.message);
-    console.warn('[browser] WhatsApp stays online; browser setup will retry on the next successful connection.');
+    logger.error({ err: err.message }, 'browser setup failed');
   } finally {
     running = false;
   }

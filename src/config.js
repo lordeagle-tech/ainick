@@ -1,4 +1,3 @@
-// config.js — loads and validates everything from .env into one object.
 try {
   require('dotenv').config();
 } catch (err) {
@@ -87,7 +86,6 @@ function collectAgnesKeys() {
 const config = {
   whatsapp: {
     pairingNumber: process.env.WHATSAPP_PAIRING_NUMBER || '',
-    usePairingCode: (process.env.USE_PAIRING_CODE || 'true') === 'true',
   },
   ownerIds: loadOwnerIds(),
   ai: {
@@ -108,12 +106,8 @@ const config = {
     httpTimeoutMs: Number(process.env.AI_HTTP_TIMEOUT_MS || 300000),
     videoPollTimeoutMs: Number(process.env.AI_VIDEO_POLL_TIMEOUT_MS || 600000),
     videoPollIntervalMs: Number(process.env.AI_VIDEO_POLL_INTERVAL_MS || 5000),
-    // Named providers the owner can switch between at runtime with "model <name>".
-    // Only official, direct vendor endpoints — no third-party proxies impersonating a
-    // vendor's own client to dodge a WAF. Anthropic/OpenAI use standard, undisguised
-    // SDK-style requests with the user's own key.
-    // Nick AI uses Groq as the default chat brain; AI_DEFAULT_PROVIDER can override it.
-    // Other configured vendors remain available as fallback and coding backends.
+    // Owner-switchable direct vendor endpoints only; Anthropic/OpenAI use their own keys, not impersonating proxies.
+    // Groq is the default provider; AI_DEFAULT_PROVIDER can override it and configured vendors remain available as fallbacks.
     providerChain: (() => {
       const fromEnv = (process.env.AI_PROVIDER_CHAIN || '')
         .split(',').map((s) => s.trim().toLowerCase()).filter(Boolean);
@@ -161,11 +155,7 @@ const config = {
         fallbackModel: process.env.AI_FALLBACK_MODEL || 'agnes-2.0-flash',
         style: 'openai', // request/response shape
       },
-      // Agnes can be used as the OpenAI-compatible gateway for Claude-style clients.
-      // The public docs document the OpenAI-compatible endpoint and Claude routing through
-      // compatible routers; they do NOT document arbitrary native Claude model IDs at Agnes.
-      // Therefore these aliases intentionally map to an Agnes model, rather than pretending
-      // an Agnes key is a direct Anthropic key.
+      // Claude-style aliases use Agnes's OpenAI-compatible route and Agnes model IDs, not native Anthropic IDs.
       'agnes-claude': {
         label: 'Agnes AI → Claude-style route',
         baseUrl: (process.env.AI_BASE_URL || 'https://apihub.agnes-ai.com/v1').replace(/\/$/, ''),
@@ -257,10 +247,8 @@ const config = {
     ),
   },
   behavior: {
-    // Safety default: group AI requires an explicit @mention, bot-name call, or
-    // reply to a bot message. A legacy RESPOND_IN_GROUPS_ALWAYS=true must not
-    // accidentally turn the bot chatty after an update. To deliberately restore
-    // always-on group AI, set GROUP_REQUIRE_ADDRESS=false.
+    // Group AI requires a mention, bot-name call, or reply by default; the legacy always-on flag cannot override this.
+    // Set GROUP_REQUIRE_ADDRESS=false to deliberately enable always-on group replies.
     notifyOwnersOnChat: (process.env.NOTIFY_OWNERS_ON_CHAT || 'false') === 'true',
     groupRequireAddress: !['false', '0', 'no', 'off'].includes(String(process.env.GROUP_REQUIRE_ADDRESS || 'true').toLowerCase()),
     respondInGroupsAlways: (process.env.GROUP_REQUIRE_ADDRESS || 'true') !== 'false'
@@ -302,10 +290,8 @@ const config = {
     minSavedForRandomDrop: Number(process.env.STICKER_MIN_FOR_RANDOM_DROP ?? 3),
   },
   github: {
-    // Optional fallback token/repo if the user doesn't provide one in-chat. Leave blank
-    // to always require the user to supply their own repoUrl + access token per request.
-    // Prefer the conventional GITHUB_TOKEN name; retain the old name for existing
-    // deployments. Keep this in deployment secrets, never in a tracked .env file.
+    // Optional fallback token/repo; prefer GITHUB_TOKEN and keep credentials in deployment secrets, never tracked .env.
+    // Without configured defaults, require a repository and token per request.
     defaultToken: process.env.GITHUB_TOKEN || process.env.GITHUB_DEFAULT_TOKEN || '',
     defaultRepoUrl: process.env.GITHUB_DEFAULT_REPO_URL || '',
   },
@@ -319,17 +305,8 @@ const config = {
     groqKey: process.env.GROQ_API_KEY || '',
     geminiKey: process.env.GEMINIAPIKEY || process.env.GEMINI_API_KEY || '',
     malvryxKey: process.env.MALVRYX_API_KEY || '',
-    telegramToken: process.env.TELEGRAM_BOT_TOKEN || process.env.TG_BOT_TOKEN || '',
-    telegramAdminIds: (process.env.TELEGRAM_ADMIN_IDS || process.env.TELEGRAM_OWNER_IDS || '').split(/[,\s]+/).map(s => s.trim()).filter(Boolean),
   },
   logLevel: process.env.LOG_LEVEL || 'info',
 };
-
-if (!Object.values(config.ai.providers || {}).some((provider) => (provider.apiKeys || []).length || provider.local)) {
-  console.warn('⚠️  No AI provider API key is set — add GROQ_API_KEY (recommended) or another configured provider key to .env');
-}
-if (!config.whatsapp.pairingNumber) {
-  console.warn('⚠️  WHATSAPP_PAIRING_NUMBER is not set — you will need to scan a QR code instead.');
-}
 
 module.exports = config;

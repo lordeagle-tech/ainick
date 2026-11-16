@@ -1,4 +1,3 @@
-// db.js — a tiny dependency-free JSON-file datastore.
 // Not a "real" database, but it's durable, atomic, and enough for a self-hosted bot.
 // Collections are separate files under /data, loaded into memory and flushed on write
 // (debounced) so we don't hammer the disk on every message.

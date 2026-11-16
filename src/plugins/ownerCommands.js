@@ -1,12 +1,13 @@
 'use strict';
 
-const roles = require('../features/roles');
+const roles = require('../features').roles;
 const commandPrefix = require('./commandPrefix');
 const { numFromJid } = require('../utils/helpers');
+const messageLayout = require('../utils/messageLayout');
 
 function isOwnerPluginCommand(input) {
   const parsed = commandPrefix.parseCommand(input);
-  return /^(?:owner\s+(?:menu|help|commands|status|daemon|groups)|addowner(?:\s|$)|setprefix(?:\s|$)|setpp(?:\s|$)|vps\s+service(?:\s|$))/i.test(parsed.text);
+  return /^(?:owner\s+(?:menu|help|commands|status|daemon|groups)|restart(?:\s|$)|addowner(?:\s|$)|setprefix(?:\s|$)|setpp(?:\s|$)|vps\s+service(?:\s|$))/i.test(parsed.text);
 }
 
 function isSetProfilePictureCommand(input) {
@@ -17,6 +18,11 @@ function command(label) {
   return `${commandPrefix.getPrefix()}${label}`;
 }
 
+const menuCommands = [
+  'owner menu', 'owner help', 'owner commands', 'owner status', 'model', 'private', 'public', 'owner daemon', 'owner groups',
+  'restart', 'addowner', 'addsudo', 'addadmin', 'roles', 'setpp', 'vps service',
+];
+
 function ownerMenu() {
   const allowlist = String(process.env.VPS_ALLOWED_SERVICES || '').split(',').map((x) => x.trim()).filter(Boolean);
   const lines = [
@@ -25,6 +31,7 @@ function ownerMenu() {
     `• \`${command('model')}\` — view/switch the AI provider`,
     `• \`${command('private')}\` / \`${command('public')}\` — change bot access mode`,
     `• \`${command('owner daemon on|off|status')}\` / \`${command('owner groups on|off|status')}\` — control response modes`,
+    `• \`${command('restart')}\` — restart through the VPS supervisor`,
     `• \`${command('addowner @member')}\` — add an owner (mention/reply or phone number)`,
     `• \`${command('addsudo @member')}\` / \`${command('addadmin @member')}\` — grant scoped bot roles`,
     `• \`${command('roles')}\` — list bot roles`,
@@ -60,16 +67,26 @@ async function route(ctx, input) {
   if (commandPrefix.needsPrefix(parsed) && !exempt) {
     return { handled: true, text: `This command needs the configured prefix. Try: \`${parsed.prefix}${text}\`` };
   }
-  if (!getExplicitOwner(ctx)) return { handled: true, text: '👑 Owner only.' };
+  if (!getExplicitOwner(ctx)) return { handled: true, text: messageLayout.accessDenied('owner') };
 
   if (/^owner\s+(?:menu|help|commands)$/i.test(text)) {
     return { handled: true, text: ownerMenu() };
   }
 
+  if (/^restart(?:\s|$)/i.test(text)) {
+    if (!/^restart$/i.test(text)) {
+      return { handled: true, text: `Usage: \`${command('restart')}\`.` };
+    }
+    if (process.env.NICK_AI_SUPERVISED !== '1') {
+      return { handled: true, text: 'Restart is not active because Nick AI was started directly. Start it with `npm start` (or `npm run start:supervisor`) to enable supervised restarts.' };
+    }
+    return { handled: true, text: '♻️ Restarting Nick AI through the VPS supervisor. I should be back shortly.', restartAfterReply: true };
+  }
+
   if (/^owner\s+status$/i.test(text)) {
     try {
-      const obsidian = require('../features/obsidian');
-      const daemons = require('../features/daemons').getSettings();
+      const obsidian = require('../features').obsidian;
+      const daemons = require('../features').daemons.getSettings();
       const active = require('../ai/client').getActiveProvider();
       return {
         handled: true,
@@ -82,7 +99,7 @@ async function route(ctx, input) {
 
   const runtimeModeMatch = text.match(/^owner\s+(daemon|groups)\s+(on|off|status)$/i);
   if (runtimeModeMatch) {
-    const daemons = require('../features/daemons');
+    const daemons = require('../features').daemons;
     const mode = runtimeModeMatch[1].toLowerCase();
     const action = runtimeModeMatch[2].toLowerCase();
     if (action === 'status') {
@@ -99,7 +116,7 @@ async function route(ctx, input) {
   if (prefixMatch) {
     if (!prefixMatch[1]) {
       const current = commandPrefix.getPrefix();
-      return { handled: true, text: `Current command prefix: ${current ? `\`${current}\`` : 'none'}. Use \`setprefix !\` to set one or \`setprefix off\` to clear it.` };
+      return { handled: true, text: `Current command prefix: ${current ? `\`${current}\`` : 'none'}. Use \`setprefix !\` (or any 1–3 non-space characters, including emoji) to set one, or \`setprefix off\` to clear it.` };
     }
     const result = commandPrefix.setPrefix(prefixMatch[1]);
     if (!result.ok) return { handled: true, text: `❌ ${result.error}` };
@@ -147,7 +164,7 @@ async function handleMedia(ctx, input, imageBuffer) {
   if (commandPrefix.needsPrefix(parsed)) {
     return { handled: true, text: `This command needs the configured prefix. Try: \`${parsed.prefix}setpp\`` };
   }
-  if (!getExplicitOwner(ctx)) return { handled: true, text: '👑 Owner only.' };
+  if (!getExplicitOwner(ctx)) return { handled: true, text: messageLayout.accessDenied('owner') };
   if (!Buffer.isBuffer(imageBuffer) || !imageBuffer.length) {
     return { handled: true, text: 'I could not find a photo. Send or reply to an image with `setpp`.' };
   }
@@ -162,4 +179,4 @@ async function handleMedia(ctx, input, imageBuffer) {
   }
 }
 
-module.exports = { route, handleMedia, isOwnerPluginCommand, isSetProfilePictureCommand, ownerMenu };
+module.exports = { route, handleMedia, isOwnerPluginCommand, isSetProfilePictureCommand, ownerMenu, menuCommands };

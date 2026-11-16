@@ -1,4 +1,3 @@
-// core/lastBuild.js — remembers the most recently generated file set per chat.
 // Persisted to disk so restarts / "send it again" still work.
 const fs = require('fs');
 const path = require('path');
@@ -55,7 +54,7 @@ function getZipPath(chatId) {
   const e = get(chatId);
   if (e?.zipPath && fs.existsSync(e.zipPath)) return e.zipPath;
   try {
-    const p = global.__brokenLastBuildZipPath?.get?.(chatId);
+    const p = global.__nickAiLastBuildZipPath?.get?.(chatId);
     if (p && fs.existsSync(p)) return p;
   } catch {}
   return null;

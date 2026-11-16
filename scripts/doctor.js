@@ -9,6 +9,24 @@ const syntaxOnly = process.argv.includes('--syntax');
 const required = new Set();
 const builtins = new Set(require('module').builtinModules);
 const files = [];
+const featureDir = path.join(root, 'src', 'features');
+const bundledFeatures = new Set();
+const bundledFeatureFiles = new Set();
+for (const name of fs.readdirSync(featureDir).filter((entry) => /\.js$/.test(entry))) {
+  const file = path.join(featureDir, name);
+  const source = fs.readFileSync(file, 'utf8');
+  const definitions = [...source.matchAll(/runtime\.define\(["']([^"']+)["']/g)];
+  if (definitions.length) bundledFeatureFiles.add(file);
+  for (const match of definitions) {
+    bundledFeatures.add(match[1]);
+  }
+  const optionalFeatures = source.match(/const OPTIONAL_FEATURES\s*=\s*\[([\s\S]*?)\]/);
+  if (optionalFeatures) {
+    for (const match of optionalFeatures[1].matchAll(/['"]([A-Za-z0-9_-]+)['"]/g)) {
+      bundledFeatures.add(match[1]);
+    }
+  }
+}
 function walk(dir) {
   for (const name of fs.readdirSync(dir)) {
     if (['node_modules','.git','sessions'].includes(name)) continue;
@@ -43,6 +61,11 @@ for (const file of files) {
   }
   for (const spec of localSpecs) {
     const base = path.resolve(path.dirname(file), spec);
+    const isFeatureBundle = bundledFeatureFiles.has(file);
+    if (isFeatureBundle && base.startsWith(`${featureDir}${path.sep}`)) {
+      const featureName = path.basename(base).replace(/\.(js|json)$/, '');
+      if (bundledFeatures.has(featureName)) continue;
+    }
     const candidates = [base, `${base}.js`, `${base}.cjs`, `${base}.mjs`, `${base}.json`, path.join(base, 'index.js')];
     if (!candidates.some(fs.existsSync)) localMissing.push(`${path.relative(root, file)} -> ${spec}`);
   }

@@ -1,7 +1,7 @@
 #!/usr/bin/env node
 // Node-only web search CLI used for diagnostics/manual testing.
 // Usage: node scripts/search.js "latest Nigeria news"
-const web = require('../src/features/websearch2');
+const web = require('../src/features').websearch2;
 
 (async () => {
   const query = process.argv.slice(2).join(' ').trim();

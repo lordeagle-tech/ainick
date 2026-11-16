@@ -1,8 +1,4 @@
-// core/localPreview.js — serves a just-built website (from build_website's file list) over an
-// ephemeral local static HTTP server, screenshots it with a headless browser, then tears the
-// server down. Intentionally does NOT execute any generated code (no npm install, no running
-// server-side scripts) — it only serves static files that were already written to disk and
-// takes a picture. That keeps this to "show me what it looks like", not "run arbitrary code".
+// Serves generated files for screenshots without running server-side code.
 const http = require('http');
 const path = require('path');
 const logger = require('../logger');

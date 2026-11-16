@@ -1,7 +1,6 @@
-// utils/permissions.js — who is allowed to do what.
 const config = require('../config');
 const { numFromJid } = require('./helpers');
-const roles = require('../features/roles');
+const roles = require('../features').roles;
 
 function isOwner(senderJid) {
   return roles.isOwner(senderJid);

@@ -1,4 +1,4 @@
-const browser = require('../src/features/browser');
+const browser = require('../src/features').browser;
 
 (async () => {
   const url = process.argv[2] || 'https://www.bing.com';

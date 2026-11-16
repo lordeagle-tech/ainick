@@ -1,11 +1,12 @@
 'use strict';
 
-const groupAdmin = require('../features/groupAdmin');
-const moderation = require('../features/moderation');
+const groupAdmin = require('../features').groupAdmin;
+const moderation = require('../features').moderation;
 const permissions = require('../utils/permissions');
-const roles = require('../features/roles');
+const roles = require('../features').roles;
 const { numFromJid } = require('../utils/helpers');
 const commandPrefix = require('./commandPrefix');
+const messageLayout = require('../utils/messageLayout');
 
 const PROTECTION_KEYS = new Map([
   ['antilink', 'antilink'],
@@ -17,6 +18,13 @@ const PROTECTION_KEYS = new Map([
 function command(label) {
   return `${commandPrefix.getPrefix()}${label}`;
 }
+
+const menuCommands = [
+  'group stats', 'group menu', 'group open', 'group close', 'group lock', 'group unlock',
+  'gcname', 'gcdesc', 'gcpp', 'group protection', 'group settings', 'group antilink', 'group antigrouplink',
+  'group antitag', 'group antibadword', 'group warnings', 'group warn', 'group clearwarnings',
+  'group kick', 'group promote', 'group demote',
+];
 
 function helpText() {
   return [
@@ -83,7 +91,7 @@ function findTarget(ctx) {
 
 function requireGroup(ctx, needBotAdmin = true) {
   if (!ctx.isGroup) return 'This command only works inside a WhatsApp group.';
-  if (!isGroupAdmin(ctx)) return '🔒 Group-admin only.';
+  if (!isGroupAdmin(ctx)) return messageLayout.accessDenied('group admin');
   if (needBotAdmin && !isBotAdmin(ctx)) return '⚠️ Make Nick a group admin first; WhatsApp will not let me change group settings yet.';
   return null;
 }
@@ -259,4 +267,7 @@ async function handleMedia(ctx, input, imageBuffer) {
   }
 }
 
-module.exports = { route, handleMedia, isGroupPluginCommand, isGroupPictureCommand, helpText };
+module.exports = {
+  route, handleMedia, isGroupPluginCommand, isGroupPictureCommand, helpText, menuCommands,
+  isGroupAdmin, isBotAdmin, findTarget, requireGroup,
+};

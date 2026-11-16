@@ -1,4 +1,3 @@
-// core/memory.js — durable, isolated memory.
 //
 // There are intentionally TWO different scopes:
 //   1) user profile memory: identity/preferences/interactions for one WhatsApp user.

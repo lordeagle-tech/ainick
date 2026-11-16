@@ -1,23 +1,22 @@
-// index.js — entrypoint. Connects to WhatsApp, wires the agent router, and
-// handles group-membership events (welcome/goodbye).
 const config = require('./config');
 const logger = require('./logger');
 const { connect } = require('./whatsapp/connection');
 const { makeRouter } = require('./core/router');
-const reminders = require('./features/reminders');
-const birthdays = require('./features/birthdays');
-// scheduledLeaderboard disabled (no games/levels)
-const obsidian = require('./features/obsidian');
+const groupCommands = require('./plugins/groupCommands');
+const reminders = require('./features').reminders;
+const birthdays = require('./features').birthdays;
+const obsidian = require('./features').obsidian;
 const mcpManager = require('./mcp/mcpManager');
-const selfheal = require('./features/selfheal');
-const names = require('./features/names');
+const selfheal = require('./features').selfheal;
+const names = require('./features').names;
 const { Collection } = require('./db');
 const { numFromJid, isGroupJid } = require('./utils/helpers');
 const jidResolver = require('./utils/jidResolver');
 const { flushAllSync } = require('./db');
 const chatFont = require('./utils/chatFont');
-const messageTracker = require('./features/messageTracker');
-const starboard = require('./features/starboard');
+const messageTracker = require('./features').messageTracker;
+const { starboard } = require('./features').optionalFeatures;
+const autoPresence = require('./features').autoPresence;
 
 /** Best-effort profile picture fetch — returns a URL or null (many users restrict this). */
 async function getProfilePic(sock, jid) {
@@ -29,7 +28,6 @@ async function getProfilePic(sock, jid) {
 }
 
 const { AIClient, getActiveProvider } = require('./ai/client');
-const { startTelegram } = require('./telegram/bridge');
 const aiClient = new AIClient();
 
 // Runtime self-healing: on an uncaught exception, attempt a guarded syntax repair,
@@ -68,13 +66,6 @@ async function main() {
     }
   } catch (e) { logger.warn({ err: e.message }, 'mode repair failed'); }
 
-  // Telegram runs in parallel with WhatsApp (same AI brain)
-  try {
-    await startTelegram(aiClient);
-  } catch (e) {
-    logger.warn({ err: e.message }, 'telegram bridge failed to start (WhatsApp still runs)');
-  }
-
   const provider = getActiveProvider();
   logger.info(`   Model → ${provider.model} via ${provider.name} (${provider.baseUrl})`);
   try {
@@ -84,11 +75,7 @@ async function main() {
   } catch {}
 
 
-  // This flag is a stored runtime toggle (set by the owner typing "private"/"lockdown"),
-  // not a code default — it survives restarts. It's also the #1 cause of "the bot only
-  // replies to me" reports: only the owner bypasses this gate, so it silently looks like
-  // everyone else is broken. Logging it loudly on every boot means it can never again go
-  // unnoticed for an entire deployment's lifetime.
+  // This owner-controlled privacy toggle persists across restarts; report it at startup so restrictions are not mistaken for a bot failure.
   if (obsidian.isGlobalPrivate()) {
     logger.warn('🔒 STARTUP NOTICE: global mode is PRIVATE/LOCKDOWN — only the owner will get replies. DM "public" (as owner) to restore normal responses.');
   }
@@ -109,34 +96,21 @@ async function main() {
     // Capture every message key returned by Baileys. This is what makes
     // "delete all my messages" reliable across text/media/tool/game sends,
     // instead of only tracking the router's text helper.
-    if (!sock.__brokenSendTrackerInstalled) {
+    if (!sock.__nickAiSendTrackerInstalled) {
       const originalSendMessage = sock.sendMessage.bind(sock);
-      // One outbound queue per chat. AI tools can fire several sends while completing
-      // one task; WhatsApp should see those as paced human messages, not a burst.
+      // Keep messages ordered per chat without adding an artificial delay.
       const sendQueues = new Map();
-      const lastSentAt = new Map();
-      const sleep = (ms) => new Promise(resolve => setTimeout(resolve, ms));
-      const randomGap = (min, max) => min + Math.floor(Math.random() * (max - min + 1));
       sock.sendMessage = async (...args) => {
         const jid = String(args[0] || '');
         const content = args[1] || {};
         const isDelete = !!content?.delete;
-        const isPresenceOnly = !content || Object.keys(content).length === 0;
         const previous = sendQueues.get(jid) || Promise.resolve();
         let release;
         const current = new Promise(resolve => { release = resolve; });
         sendQueues.set(jid, current);
         await previous.catch(() => {});
         try {
-          // Deletions stay quick; actual user-facing sends get a natural gap.
-          if (!isDelete && !isPresenceOnly) {
-            const last = lastSentAt.get(jid) || 0;
-            const minGap = randomGap(750, 1450);
-            const wait = Math.max(0, minGap - (Date.now() - last));
-            if (wait) await sleep(wait);
-          }
           const result = await originalSendMessage(...args);
-          if (!isDelete && !isPresenceOnly) lastSentAt.set(jid, Date.now());
           if (result?.key && !isDelete) messageTracker.record(result.key);
           return result;
         } finally {
@@ -145,8 +119,8 @@ async function main() {
           if (sendQueues.size > 500) sendQueues.clear();
         }
       };
-      sock.__brokenSendTrackerInstalled = true;
-      logger.info('human outbound message pacing enabled');
+      sock.__nickAiSendTrackerInstalled = true;
+      logger.info('outbound message ordering enabled');
     }
 
     const senderNameCache = new Map();
@@ -177,7 +151,7 @@ async function main() {
     reminders.startScheduler(sock);
     // Durable, opt-in status/reminder follow-ups created by the agent.  This keeps
     // promised feedback flowing even when the user does not send another message.
-    try { require('./features/axon_tools').startProactiveScheduler(sock); } catch (e) { logger.warn({ err: e.message }, 'proactive scheduler failed to start'); }
+    try { require('./features').axon_tools.startProactiveScheduler(sock); } catch (e) { logger.warn({ err: e.message }, 'proactive scheduler failed to start'); }
     birthdays.startScheduler(sock);
     // scheduledLeaderboard disabled (no games/levels/economy boards)
 
@@ -201,6 +175,17 @@ async function main() {
       if (type !== 'notify') return;
       for (const msg of messages) {
         try {
+          if (msg.key?.remoteJid === 'status@broadcast' && !msg.key.fromMe && autoPresence.isStatusViewEnabled()) {
+            if (typeof sock.readMessages !== 'function') {
+              logger.warn('auto status view is enabled, but this WhatsApp client does not support readMessages');
+            } else {
+              try {
+                await sock.readMessages([msg.key]);
+              } catch (e) {
+                logger.warn({ err: e.message, id: msg.key.id }, 'automatic status view receipt failed');
+              }
+            }
+          }
           // --- anti-delete: capture/revoke run fire-and-forget so they never delay the
           // actual command pipeline below ---
           if (msg.message?.protocolMessage?.key?.id) {
@@ -213,21 +198,30 @@ async function main() {
       }
     });
 
-    // Banned-member guard only (no welcome/goodbye spam — this is an agent, not a greeting bot).
+    // Membership guard plus opt-in group welcome/goodbye messages.
     sock.ev.on('group-participants.update', async (event) => {
       try {
         const { id: groupId, participants = [], action } = event;
-        if (action !== 'add' || !participants.length) return;
-        let groupMeta = null;
-        try { groupMeta = await sock.groupMetadata(groupId); } catch {}
-        const jidMap = jidResolver.buildMap(sock, { key: {} }, groupMeta);
-        const resolvedParticipants = jidResolver.normalizeMany(participants, jidMap);
-        for (const p of resolvedParticipants) {
-          if (obsidian.isBanned(p)) {
-            try { await sock.groupParticipantsUpdate(groupId, [p], 'remove'); } catch (e) {
-              logger.warn({ err: e.message }, 'failed to remove banned user');
+        if (!groupId || !participants.length) return;
+        let safeParticipants = participants;
+        if (action === 'add') {
+          let groupMeta = null;
+          try { groupMeta = await sock.groupMetadata(groupId); } catch {}
+          const jidMap = jidResolver.buildMap(sock, { key: {} }, groupMeta);
+          safeParticipants = [];
+          for (const raw of participants) {
+            const resolved = jidResolver.normalizeMany([raw], jidMap)[0] || raw;
+            if (obsidian.isBanned(resolved)) {
+              try { await sock.groupParticipantsUpdate(groupId, [resolved], 'remove'); } catch (e) {
+                logger.warn({ err: e.message }, 'failed to remove banned user');
+              }
+            } else {
+              safeParticipants.push(raw);
             }
           }
+        }
+        if (safeParticipants.length) {
+          await groupCommands.handleParticipantUpdate(sock, { ...event, participants: safeParticipants });
         }
       } catch (e) {
         logger.warn({ err: e.message }, 'group-participants.update handler failed');

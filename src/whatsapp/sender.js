@@ -1,4 +1,3 @@
-// whatsapp/sender.js — helpers for sending text/files, with chunking for long text.
 const fs = require('fs');
 const logger = require('../logger');
 const { chunkText } = require('../utils/helpers');
@@ -52,7 +51,7 @@ function makeSender(sock) {
     const sendOpts = { ...opts };
     if (Array.isArray(sendOpts.mentions) && sendOpts.mentions.length) {
       try {
-        const names = require('../features/names');
+        const names = require('../features').names;
         sendOpts.mentions = names.normalizeMentions(sendOpts.mentions, sendOpts.groupMeta);
       } catch {
         sendOpts.mentions = sendOpts.mentions
@@ -268,6 +267,7 @@ function makeSender(sock) {
   }
 
   async function typing(jid, on = true) {
+    if (!require('../features').autoPresence.isTypingEnabled()) return;
     try {
       await sock.sendPresenceUpdate(on ? 'composing' : 'paused', jid);
     } catch {}

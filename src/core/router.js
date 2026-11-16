@@ -1,12 +1,11 @@
-// core/router.js — WhatsApp message pipeline.
-// Feature dependencies live in ./featureRegistry so this file stays focused on routing.
+// Runtime dependencies live in ./registry so this file stays focused on routing.
 const { downloadMediaMessage } = require('@lordeagle21/baileys');
 const fs = require('fs');
 const path = require('path');
 const config = require('../config');
 const perms = require('../utils/permissions');
 const lastBuild = require('./lastBuild');
-const githubTokenVault = require('../features/githubTokenVault');
+const githubTokenVault = require('../features').githubTokenVault;
 const workSession = require('./workSession');
 
 async function sendOwnerProgress(sock, text, fallbackJid, isGroup, senderJid) {
@@ -26,8 +25,8 @@ async function sendOwnerProgress(sock, text, fallbackJid, isGroup, senderJid) {
     }
   } catch {}
 }
-const { economy, stickers, afk, autoreply, daemons, darkAgent, roles, funFeed, usageTracker, partyExtras, spamScore, scheduledBroadcast, stickerPack, telegramStickers, funExtras, siteRunner, dailyReport, genQuota, zipMemory, ownerCleanup, selfheal, deletehandler, leveling, customCommands, obsidian, commandPlugins, names, fixer, tts, messageTracker, training, subagents } = require('./featureRegistry');
-const { Collection } = require('../db');
+const { economy, stickers, afk, autoreply, daemons, autoPresence, darkAgent, roles, funFeed, usageTracker, partyExtras, spamScore, scheduledBroadcast, stickerPack, telegramStickers, funExtras, siteRunner, dailyReport, genQuota, zipMemory, ownerCleanup, selfheal, deletehandler, leveling, customCommands, obsidian, commandPlugins, names, fixer, tts, messageTracker, training, subagents } = require('./registry');
+const { Collection, flushAllSync } = require('../db');
 const { numFromJid, isGroupJid, fmtCurrency, isGroupStatusMentionMessage, isGroupStatusPost, looksLikeStatusPromo, phonesFromMessageType, timeAgo } = require('../utils/helpers');
 const jidResolver = require('../utils/jidResolver');
 const { getActiveProvider, setActiveProvider, listProviders } = require('../ai/client');
@@ -37,53 +36,25 @@ const aiTools = require('../ai/tools');
 const logger = require('../logger');
 const textStyler = require('../utils/textStyler');
 const chatFont = require('../utils/chatFont');
-
-// anti-spam tracker (module-level so it persists across messages)
-/** Human-like pacing: read time + a rough "typing speed" delay, capped so it never feels laggy. */
-function humanDelayMs(text) {
-  const len = String(text || '').length;
-  const readMs = 400 + Math.min(len * 8, 2500); // skim/compose time, caps ~2.9s
-  const jitter = Math.floor(Math.random() * 500);
-  return Math.min(readMs + jitter, 3800);
-}
+const messageLayout = require('../utils/messageLayout');
 
 const spam = new Map();
-// Serialize AI turns per (chat,user) so two rapid messages from the same person cannot
-// read the same stale history and then overwrite each other's context. Different users
-// remain fully independent and can be processed concurrently.
+// Serialize turns per chat/user to prevent overlapping history updates.
 const agentQueues = new Map();
-// Coalesce rapid messages from the same user in the same chat (DM or group).
-// If they send 2–5 messages in a row, we wait, join them, and answer ONCE.
+// Combine rapid messages from the same sender and chat before replying.
 const coalesceBuffers = new Map();
-const COALESCE_MS = Number(process.env.MESSAGE_COALESCE_MS || 2800);       // quiet gap before flush
-const COALESCE_MAX_MS = Number(process.env.MESSAGE_COALESCE_MAX_MS || 7500); // hard cap so we never stall forever
+const COALESCE_MS = Number(process.env.MESSAGE_COALESCE_MS ?? 350);       // brief window to combine split messages
+const COALESCE_MAX_MS = Number(process.env.MESSAGE_COALESCE_MAX_MS ?? 1500); // cap the combine window
 const COALESCE_MAX_PARTS = Number(process.env.MESSAGE_COALESCE_MAX_PARTS || 8);
 
 function formatCoalescedParts(parts) {
   const clean = (parts || []).map((p) => String(p || '').trim()).filter(Boolean);
   if (!clean.length) return '';
   if (clean.length === 1) return clean[0];
-  // Numbered so the model sees them as one multi-part turn from the same person
   return clean.map((p, i) => `[msg ${i + 1}/${clean.length}] ${p}`).join('\n');
 }
 
-// ---------------------------------------------------------------------------
-// Group follow-through.
-//
-// By default the bot stays quiet in groups unless it is mentioned, replied to,
-// or called by name. That is deliberate: answering every line of group chatter
-// turns it into a spammer.
-//
-// But someone who fires three messages in a row is not making conversation at
-// the room, they are talking TO the bot and waiting. This counts consecutive
-// messages from the same person in the same group and, once they cross the
-// threshold inside the window, lets the message through so the existing
-// coalescer merges the whole run into ONE reply.
-//
-// Tune or disable with env vars:
-//   GROUP_STREAK_THRESHOLD=3   messages in a row before it engages (0 = off)
-//   GROUP_STREAK_WINDOW_MS=25000  how long a run stays open
-// ---------------------------------------------------------------------------
+// Consecutive group messages can count as addressing the bot; tune with the streak settings below.
 const groupStreaks = new Map();
 const GROUP_STREAK_THRESHOLD = Number(process.env.GROUP_STREAK_THRESHOLD ?? 3);
 const GROUP_STREAK_WINDOW_MS = Number(process.env.GROUP_STREAK_WINDOW_MS || 25000);
@@ -204,21 +175,10 @@ function logGroupMessage(groupId, sender, text) {
 const stickerCooldown = new Map();
 const STICKER_COOLDOWN_MS = 3 * 60 * 60 * 1000;
 
-// Tiny human-style group reactions. Deliberately sparse and rate-limited.
+// Rate-limit spontaneous group engagement reactions.
 const groupEngagement = new Map();
 const GROUP_ENGAGEMENT_COOLDOWN_MS = 4 * 60 * 1000;
 const GROUP_EMOJIS = ['😭', '💀', '😐', '🫠', '🎀', '🦋', '🫧', '🤦🏽‍♀️', '😂', '🔥', '👍', '👀'];
-function energyEmoji(text) {
-  const t = String(text || '').toLowerCase();
-  if (/lol|lmao|😂|haha|dead|💀|funny|joke/.test(t)) return '😂';
-  if (/fire|lit|hard|goat|🔥|hype|w/.test(t)) return '🔥';
-  if (/ok|yes|thanks|thank|good|nice|cool|👍|bet/.test(t)) return '👍';
-  if (/sad|cry|😭|miss|hurt/.test(t)) return '😭';
-  if (/wtf|bro|bruh|chaos|insane/.test(t)) return '💀';
-  if (/love|❤️|cute|pretty/.test(t)) return '❤️';
-  if (/\?$/.test(t.trim())) return '👀';
-  return null;
-}
 async function cachedGroupMeta(sock, jid) {
   const hit = groupMetaCache.get(jid);
   if (hit && Date.now() - hit.t < 5000) return hit.meta;
@@ -233,23 +193,147 @@ async function cachedGroupMeta(sock, jid) {
   }
 }
 
+function formatCommandUptime() {
+  const total = Math.floor(process.uptime());
+  const days = Math.floor(total / 86400);
+  const hours = Math.floor((total % 86400) / 3600);
+  const minutes = Math.floor((total % 3600) / 60);
+  const seconds = total % 60;
+  return [days && `${days}d`, hours && `${hours}h`, minutes && `${minutes}m`, `${seconds}s`].filter(Boolean).join(' ');
+}
+
+function statusCommandCard(command) {
+  const replies = {
+    up: { title: 'BOT ONLINE', icon: '✅', lines: ['Nick AI is up and running.'] },
+    ping: { title: 'PING', icon: '🏓', lines: ['Pong!', 'Response check successful.'] },
+    ping2: { title: 'PING 2', icon: '🏓', lines: ['Pong!', 'Secondary ping check successful.'] },
+    uptime: { title: 'UPTIME', icon: '⏱️', lines: [`Runtime: ${formatCommandUptime()}`] },
+    alive: { title: 'BOT ALIVE', icon: '🤖', lines: ['Nick AI is online and ready.'] },
+    test: { title: 'TEST', icon: '✅', lines: ['Test successful.', 'Command handler is working.'] },
+  };
+  const reply = replies[String(command || '').toLowerCase()];
+  return reply ? messageLayout.commandCard(reply.title, reply.lines, reply.icon) : null;
+}
+
 function buildMenuText(isOwner = false) {
+  const version = '1.0.0';
+  const mode = obsidian.getGlobalMode();
+  const prefix = commandPlugins.getPrefix() || 'None';
+  const uptimeSeconds = Math.floor(process.uptime());
+  const days = Math.floor(uptimeSeconds / 86400);
+  const hours = Math.floor((uptimeSeconds % 86400) / 3600);
+  const minutes = Math.floor((uptimeSeconds % 3600) / 60);
+  const uptime = [days && `${days}d`, hours && `${hours}h`, `${minutes}m`].filter(Boolean).join(' ');
+  const now = new Date();
+  const nairobiTime = new Intl.DateTimeFormat('en-GB', {
+    timeZone: 'Africa/Nairobi',
+    day: '2-digit',
+    month: 'short',
+    year: 'numeric',
+    hour: '2-digit',
+    minute: '2-digit',
+    hour12: false,
+  }).format(now);
+  const nairobiHour = Number(new Intl.DateTimeFormat('en-GB', {
+    timeZone: 'Africa/Nairobi', hour: '2-digit', hour12: false,
+  }).format(now));
+  const greetEmoji = nairobiHour < 12 ? '☀️' : nairobiHour < 18 ? '🌤️' : '🌙';
   const ownerSection = isOwner
-    ? '\n\n*Owner controls*\n• `owner menu` — full owner command list\n• `owner status` — check Nick’s status\n• `model` — view or switch the AI provider\n• `private` / `public` — change access mode'
+    ? `\n\n╭─〘 *𝐎𝐖𝐍𝐄𝐑 𝐂𝐎𝐍𝐓𝐑𝐎𝐋𝐒* 〙\n│ ❐➻ \`${commandPlugins.getPrefix()}owner menu\` — full owner command list\n│ ❐➻ \`${commandPlugins.getPrefix()}owner status\` — check bot status\n│ ❐➻ \`${commandPlugins.getPrefix()}model\` — view or switch the AI provider\n│ ❐➻ \`${commandPlugins.getPrefix()}private\` / \`${commandPlugins.getPrefix()}public\` — change access mode\n╰──────────⊷`
     : '';
-  return `╭── ✦ *NICK AI* ✦ ──╮
-│ Built by Lord Eagle
-╰───────────────────╯
+  return `╭─〘 *𝐍𝐈𝐂𝐊 𝐀𝐈* 〙
+┃❍ ʙᴏᴛ ɴᴀᴍᴇ 「 *𝗡𝗜𝗖𝗞 𝗔𝗜* 」
+┃❍ ᴠᴇʀsɪᴏɴ : ${version}
+┃❍ ᴏᴡɴᴇʀ : 𝗟𝗢𝗥𝗗 𝗘𝗔𝗚𝗟𝗘
+┃❍ ᴍᴏᴅᴇ : ${mode}
+┃❍ ʀᴜɴᴛɪᴍᴇ : ${uptime}
+┃❍ ᴘʀᴇғɪx : 「 *${prefix}* 」
+┃❍ ᴘʟᴀᴛғᴏʀᴍ : ${process.platform}
+┃ 🕒 ${nairobiTime} ${greetEmoji}
+╰──────────⊷
 
-*Talk to me*
-Ask a question, search the web, get help writing or coding, or summarize a link. Ask me to generate an image from a description. You can also send or reply to a photo and ask what’s in it, read text from it, or answer a question about it; share a document or voice note and tell me what you need.
+╭─〘 *𝐌𝐄𝐍𝐔* 〙
+│ ❐➻ *Talk to me*
+│ Ask a question, search the web, get help writing or coding, or summarize a link.
+│ Ask for an image, share a photo for analysis, or send a document or voice note.
+│
+│ Type \`normal menu\` to see the available commands.${ownerSection}
+╰──────────⊷`;
+}
 
-*Quick commands*
-• \`menu\` / \`help\` / \`commands\` — show this menu
-• \`ping\` — check that I’m online
+function buildNormalMenuText() {
+  const pluginSections = commandPlugins.getMenuSections()
+    .map(({ title, commands }) => [
+      `│ ❐➻ *${title}*`,
+      ...commands.map((name) => `│ ❐➻ \`${name}\``),
+    ].join('\n'))
+    .join('\n│\n');
 
-*In groups*
-Mention me or start your message with \`Nick\`. Admins can type \`group menu\` for group controls.${ownerSection}`;
+  return `╭─〘 *𝐍𝐎𝐑𝐌𝐀𝐋 𝐌𝐄𝐍𝐔* 〙
+│ ❐➻ *Menu & Status*
+│ ❐➻ \`menu\`
+│ ❐➻ \`help\`
+│ ❐➻ \`commands\`
+│ ❐➻ \`normal menu\`
+│ ❐➻ \`up\`
+│ ❐➻ \`alive\`
+│ ❐➻ \`ping\`
+│ ❐➻ \`ping2\`
+│ ❐➻ \`uptime\`
+│ ❐➻ \`test\`
+│
+│ ❐➻ *Games*
+│ ❐➻ \`games\`
+│ ❐➻ \`game list\`
+│ ❐➻ \`game leaderboard\`
+│ ❐➻ \`stop game\`
+│ ❐➻ \`wordgrid\`
+│ ❐➻ \`trivia\`
+│ ❐➻ \`scramble\`
+│ ❐➻ \`guess\`
+│ ❐➻ \`riddle\`
+│ ❐➻ \`hangman\`
+│ ❐➻ \`crossword\`
+│ ❐➻ \`spelling bee\`
+│ ❐➻ \`wyr\`
+│ ❐➻ \`emoji game\`
+│ ❐➻ \`quiz\`
+│ ❐➻ \`ttt\`
+│ ❐➻ \`blackjack\`
+│ ❐➻ \`coinflip\`
+│ ❐➻ \`slot\`
+│
+│ ❐➻ *Utilities*
+│ ❐➻ \`usage\`
+│ ❐➻ \`ctx\`
+│ ❐➻ \`compact\`
+│ ❐➻ \`callad\`
+│ ❐➻ \`donate\`
+│ ❐➻ \`support\`
+│ ❐➻ \`setprefix\`
+│
+${pluginSections}
+╰──────────⊷`;
+}
+
+function botNamePattern(name) {
+  const escaped = String(name).trim().replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+  return new RegExp(
+    `^(?:@)?(?:(?:hey|hi|yo|oi|please)\\s+)?${escaped}(?=$|[^\\p{L}\\p{N}])`,
+    'iu',
+  );
+}
+
+function stripBotAddress(text, botNameList) {
+  let cleanText = String(text || '').trim();
+  for (const name of botNameList) {
+    if (!name) continue;
+    const pattern = botNamePattern(name);
+    if (!pattern.test(cleanText)) continue;
+    cleanText = cleanText.replace(pattern, '').replace(/^[\s,;:.!?—–-]+/, '').trim();
+    break;
+  }
+  return cleanText.replace(/^@\d{6,}\s*/g, '').trim();
 }
 
 function makeRouter({ sock, aiClient, senderName }) {
@@ -270,6 +354,10 @@ function makeRouter({ sock, aiClient, senderName }) {
     return sent;
   }
 
+  async function sendCommandText(jid, text, opts = {}) {
+    return sendText(jid, messageLayout.commandResponse(text), opts);
+  }
+
   async function sendGameResult(jid, result, opts = {}) {
     if (!result) return;
     const merged = { ...opts };
@@ -280,20 +368,20 @@ function makeRouter({ sock, aiClient, senderName }) {
       try {
         const sent = await sock.sendMessage(jid, {
           image: Buffer.isBuffer(result.image) ? result.image : result.image,
-          caption: chatFont.apply(jid, result.text || ''),
+          caption: chatFont.apply(jid, messageLayout.commandResponse(result.text || '')),
           ...(result.mentions?.length ? { mentions: result.mentions } : {}),
         });
         if (sent?.key) autoreply.addBotMessage(sent.key);
       } catch (e) {
         logger.warn({ err: e.message }, 'game image send failed');
-        await sendText(jid, result.text || '🖼️ Game image could not be sent.', merged);
+        await sendCommandText(jid, result.text || '🖼️ Game image could not be sent.', merged);
       }
       return;
     }
 
     // Spelling bee / game TTS — always Opus OGG voice note (ptt)
     if (result.ttsText || result.audioUrl) {
-      if (result.text) await sendText(jid, result.text, merged);
+      if (result.text) await sendCommandText(jid, result.text, merged);
       try {
         let audioBuf = null;
         let mime = 'audio/ogg; codecs=opus';
@@ -334,7 +422,7 @@ function makeRouter({ sock, aiClient, senderName }) {
       } catch (e) {
         logger.warn({ err: e.message }, 'game audio/tts send failed');
         // Don't spam the chat with engine errors — short human line
-        await sendText(jid, "couldnt send the voice note. spelling still on — type your guess.", merged);
+        await sendCommandText(jid, "couldnt send the voice note. spelling still on — type your guess.", merged);
       }
       return;
     }
@@ -342,7 +430,7 @@ function makeRouter({ sock, aiClient, senderName }) {
     // Music Guess: send the prompt first, then a real MP3 mystery clip. The answer
     // is deliberately not placed in the filename or external preview metadata.
     if (result.audio) {
-      if (result.text) await sendText(jid, result.text, merged);
+      if (result.text) await sendCommandText(jid, result.text, merged);
       try {
         const sent = await sock.sendMessage(jid, {
           audio: Buffer.isBuffer(result.audio) ? result.audio : result.audio,
@@ -353,7 +441,7 @@ function makeRouter({ sock, aiClient, senderName }) {
         if (sent?.key) autoreply.addBotMessage(sent.key);
       } catch (e) {
         logger.warn({ err: e.message }, 'game audio send failed');
-        await sendText(jid, '❌ I fetched the mystery song but WhatsApp could not send the audio. Try the game again.', merged);
+        await sendCommandText(jid, '❌ I fetched the mystery song but WhatsApp could not send the audio. Try the game again.', merged);
       }
       return;
     }
@@ -369,16 +457,16 @@ function makeRouter({ sock, aiClient, senderName }) {
           },
         });
         if (sent?.key) autoreply.addBotMessage(sent.key);
-        if (result.text) await sendText(jid, result.text, merged);
+        if (result.text) await sendCommandText(jid, result.text, merged);
         return;
       } catch (e) {
         logger.warn({ err: e.message }, 'game poll send failed — falling back to text');
-        if (result.text) return sendText(jid, result.text, merged);
-        return sendText(jid, `${result.poll.name}\n` + result.poll.values.map((v, i) => `${i + 1}) ${v}`).join('\n'), merged);
+        if (result.text) return sendCommandText(jid, result.text, merged);
+        return sendCommandText(jid, `${result.poll.name}\n` + result.poll.values.map((v, i) => `${i + 1}) ${v}`).join('\n'), merged);
       }
     }
 
-    if (result.text !== undefined && result.text !== null) return sendText(jid, result.text, merged);
+    if (result.text !== undefined && result.text !== null) return sendCommandText(jid, result.text, merged);
   }
 
   async function handleIncoming(msg) {
@@ -404,6 +492,8 @@ function makeRouter({ sock, aiClient, senderName }) {
         }
       } catch {}
     };
+    let processingReactionPromise = null;
+    let processingReactionSent = false;
     try {
     try { if (!handleIncoming._bc) { scheduledBroadcast.start(sock); dailyReport.start(sock); handleIncoming._bc = true; } } catch {}
 
@@ -505,6 +595,83 @@ function makeRouter({ sock, aiClient, senderName }) {
         logger.debug({ id: msg.key?.id, remote: jid, stub: msg.messageStubType }, 'skip: empty message body (possible decrypt failure)');
       }
       return;
+    }
+
+    // Anti-view-once inspects only message-envelope keys; it never opens, downloads,
+    // reveals, or forwards protected media. Run this before sticker/media handlers.
+    const hasViewOnceEnvelope = (message) => {
+      let cur = message;
+      for (let i = 0; i < 6 && cur; i++) {
+        if (cur.viewOnceMessage || cur.viewOnceMessageV2 || cur.viewOnceMessageV2Extension) return true;
+        cur = cur.ephemeralMessage?.message || cur.editedMessage?.message
+          || cur.documentWithCaptionMessage?.message || cur.message || null;
+      }
+      return false;
+    };
+    const viewOnceHelp = 'View-once media is designed to be temporary, so I can’t reveal or forward it. Please ask the sender to resend it as a regular photo or video.';
+    const containsViewOnce = hasViewOnceEnvelope(msg.message);
+    if (containsViewOnce) {
+      let deleted = false;
+      if (isGroup && !msg.key?.fromMe) {
+        try {
+          const moderation = require('../features').moderation;
+          if (moderation.getSettings(jid).antiviewonce) {
+            const groupMeta = await cachedGroupMeta(sock, jid);
+            const earlyMap = jidResolver.buildMap(sock, msg, groupMeta);
+            const earlyIdentity = jidResolver.resolveIdentity(senderJid, earlyMap, groupMeta);
+            const aliases = [...new Set([senderJid, earlyIdentity.jid, ...(earlyIdentity.aliases || [])].filter(Boolean))];
+            const isAdmin = perms.isOwner(senderJid) || perms.isGroupAdmin(earlyIdentity.jid || senderJid, groupMeta, aliases);
+            const botIds = [...new Set([sock?.user?.id, sock?.user?.lid,
+              sock?.authState?.creds?.me?.id, sock?.authState?.creds?.me?.lid].filter(Boolean))];
+            if (!isAdmin && perms.botIsGroupAdmin(botIds[0], groupMeta, botIds)) {
+              await sock.sendMessage(jid, { delete: {
+                remoteJid: jid, id: msg.key.id, fromMe: !!msg.key.fromMe,
+                participant: msg.key.participant,
+              }});
+              deleted = true;
+            }
+          }
+        } catch (e) {
+          logger.warn({ jid, err: e.message }, 'anti-view-once group moderation failed');
+        }
+      }
+      if (!deleted) await sendText(jid, viewOnceHelp).catch(() => {});
+      return;
+    }
+    let groupMediaModerationTriggered = false;
+    if (isGroup && !msg.key?.fromMe) {
+      try {
+        const moderation = require('../features').moderation;
+        const groupSettings = moderation.getSettings(jid);
+        const blockedSticker = groupSettings.antisticker && !!mt.stickerMessage;
+        if (blockedSticker) {
+          groupMediaModerationTriggered = true;
+          const groupMeta = await cachedGroupMeta(sock, jid);
+          const earlyMap = jidResolver.buildMap(sock, msg, groupMeta);
+          const earlyIdentity = jidResolver.resolveIdentity(senderJid, earlyMap, groupMeta);
+          const aliases = [...new Set([senderJid, earlyIdentity.jid, ...(earlyIdentity.aliases || [])].filter(Boolean))];
+          const isAdmin = perms.isOwner(senderJid) || perms.isGroupAdmin(earlyIdentity.jid || senderJid, groupMeta, aliases);
+          if (!isAdmin) {
+            const botIds = [...new Set([sock?.user?.id, sock?.user?.lid,
+              sock?.authState?.creds?.me?.id, sock?.authState?.creds?.me?.lid].filter(Boolean))];
+            if (perms.botIsGroupAdmin(botIds[0], groupMeta, botIds)) {
+              try {
+                await sock.sendMessage(jid, { delete: {
+                  remoteJid: jid, id: msg.key.id, fromMe: !!msg.key.fromMe,
+                  participant: msg.key.participant,
+                }});
+              } catch (e) {
+                logger.warn({ jid, err: e.message, reason: 'sticker' }, 'group media moderation delete failed');
+              }
+            }
+            logger.info({ jid, reason: 'sticker' }, 'group media moderation blocked message before media handling');
+            return;
+          }
+        }
+      } catch (e) {
+        logger.warn({ jid, err: e.message }, 'early group media moderation check failed');
+        if (groupMediaModerationTriggered) return;
+      }
     }
     
     // Track bot's sent messages for auto-reply
@@ -610,6 +777,9 @@ function makeRouter({ sock, aiClient, senderName }) {
     const quotedParticipantPnRaw = quotedContext?.participantPn || quotedContext?.participantAlt || null;
     const quotedMessageId = quotedContext?.stanzaId || quotedContext?.quotedMessageId || null;
 
+    // Never unwrap or download quoted view-once media, regardless of the command text.
+    if (hasViewOnceEnvelope(ctxInfoDoc?.quotedMessage)) return sendText(jid, viewOnceHelp);
+
     // --- open quoted document / text file (NOT view-once) ---
     const quotedDoc = quotedUnwrapped?.documentMessage || quotedMessage?.documentMessage
       || quotedUnwrapped?.documentWithCaptionMessage?.message?.documentMessage;
@@ -647,59 +817,6 @@ function makeRouter({ sock, aiClient, senderName }) {
       }
     }
 
-    // --- view-once unlock: ONLY when quoted message is actually view-once ---
-    const voQuoted = ctxInfoDoc?.quotedMessage?.viewOnceMessageV2
-      || ctxInfoDoc?.quotedMessage?.viewOnceMessage
-      || ctxInfoDoc?.quotedMessage?.viewOnceMessageV2Extension
-      || quotedUnwrapped?.viewOnceMessageV2
-      || quotedUnwrapped?.viewOnceMessage;
-    const wantsViewOnce = !!voQuoted
-      && /\b(open|unlock|reveal|view\s*once|show|send\s+(it\s+)?(to\s+)?me|dm\s+me|to\s+dm)\b/i.test(rawText || '');
-    if (wantsViewOnce) {
-      try {
-        const quotedRoot = ctxInfoDoc?.quotedMessage || {};
-        const voNode = quotedRoot.viewOnceMessageV2 || quotedRoot.viewOnceMessage || quotedRoot.viewOnceMessageV2Extension || quotedRoot;
-        const voInner = voNode?.message || quotedUnwrapped?.viewOnceMessageV2?.message || quotedUnwrapped?.viewOnceMessage?.message || voNode || {};
-        const voMsg = {
-          key: { remoteJid: jid, id: ctxInfoDoc?.stanzaId, participant: ctxInfoDoc?.participant, fromMe: false },
-          message: voInner.imageMessage || voInner.videoMessage || voInner.audioMessage ? voInner : voNode,
-        };
-        const mediaNode = voInner.imageMessage || voInner.videoMessage || voInner.audioMessage
-          ? voInner
-          : (voInner.message || voInner);
-        const hasImg = !!(mediaNode.imageMessage || voInner.imageMessage);
-        const hasVid = !!(mediaNode.videoMessage || voInner.videoMessage);
-        const hasAud = !!(mediaNode.audioMessage || voInner.audioMessage);
-        if (!hasImg && !hasVid && !hasAud) {
-          // Silent skip — was not a media view-once; do not spam the chat
-          logger.info('view-once quote had no media — ignoring');
-          // fall through to normal handling instead of error
-        } else {
-        const payloadMsg = {
-          key: voMsg.key,
-          message: hasImg ? { imageMessage: mediaNode.imageMessage || voInner.imageMessage }
-            : hasVid ? { videoMessage: mediaNode.videoMessage || voInner.videoMessage }
-            : { audioMessage: mediaNode.audioMessage || voInner.audioMessage },
-        };
-        const buf = await downloadMediaMessage(payloadMsg, 'buffer', {}, { logger, reuploadRequest: sock.updateMediaMessage });
-        const toDm = /\b(dm\s+me|send\s+(it\s+)?to\s+me|to\s+dm)\b/i.test(rawText || '');
-        let dest = jid;
-        if (toDm) {
-          const pn = resolvedSenderJid || senderJid;
-          dest = String(pn).endsWith('@s.whatsapp.net') ? pn : `${numFromJid(pn)}@s.whatsapp.net`;
-        }
-        if (hasImg) await sock.sendMessage(dest, { image: buf, caption: toDm ? '' : undefined });
-        else if (hasVid) await sock.sendMessage(dest, { video: buf, mimetype: (mediaNode.videoMessage || voInner.videoMessage)?.mimetype || 'video/mp4' });
-        else await sock.sendMessage(dest, { audio: buf, mimetype: (mediaNode.audioMessage || voInner.audioMessage)?.mimetype || 'audio/ogg; codecs=opus', ptt: true });
-        if (toDm && isGroup) await sendText(jid, 'Sent it to your DM.');
-        return;
-        } // end else has media
-      } catch (e) {
-        logger.warn({ err: e.message }, 'viewonce reveal failed');
-        // don't spam chat on false positives
-      }
-    }
-    
     // --- Deterministic bot-history deletion (groups + DMs) ---
     // "delete all this text you sent", "delete your messages", "clear error reports", etc.
     const deleteMineRe = /^(?:broken\s+)?(?:please\s+)?(?:delete|remove|clear)\s+(?:all\s+)?(?:this\s+)?(?:text\s+)?(?:you\s+)?(?:sent\s+)?(?:your\s+)?(?:the\s+)?(?:bot(?:'s|s)?\s+)?(?:error\s+)?(?:messages?|reports?|spam)?\s*$/i
@@ -861,7 +978,7 @@ if (/^(self[- ]?fix|fix yourself|health check)$/i.test(rawText) && perms.isOwner
         return sendText(jid, `⚠️ Self-repair could not safely complete. Backup: ${res.backupDir || 'none'}`);
       }
       if (/^\.broken\s*(?:dmon|dmoff|groupon|groupoff)$/i.test(rawText) && !senderIsOwner) {
-        await sendText(jid, '👑 Owner only.');
+        await sendText(jid, messageLayout.accessDenied('owner'));
         return;
       }
       if (/^\.broken\s*dmon$/i.test(rawText)) {
@@ -969,15 +1086,36 @@ if (/^(self[- ]?fix|fix yourself|health check)$/i.test(rawText) && perms.isOwner
     }
     // Deterministic group moderation runs before the AI/address gate.
     // Admin/owner messages are exempt; violations are deleted silently.
-    if (isGroup && rawText && groupMeta) {
+    if (isGroup && groupMeta) {
       try {
-        const moderation = require('../features/moderation');
+        const moderation = require('../features').moderation;
+        const settings = moderation.getSettings(jid);
         const groupAdmin = perms.isGroupAdmin(actorJid, groupMeta, senderIdentityAliases);
-        const reason = groupAdmin || senderIsElevated
-          ? null
-          : moderation.checkMessage(jid, rawText, Array.isArray(mentions) ? mentions.length : 0);
+        let reason = null;
+        if (!groupAdmin && !senderIsElevated) {
+          if (rawText) reason = moderation.checkMessage(jid, rawText, Array.isArray(mentions) ? mentions.length : 0);
+          if (!reason && settings.antitagadmin && Array.isArray(mentions)
+            && mentions.some((mentioned) => perms.isGroupAdmin(mentioned, groupMeta, [mentioned]))) {
+            reason = 'mentioning group admins';
+          }
+          if (!reason && settings.antiflood && rawText
+            && moderation.checkFlood(jid, actorJid || senderJid, settings)) {
+            reason = 'message flooding';
+            const warnings = moderation.addWarning(jid, numFromJid(actorJid || senderJid) || actorJid || senderJid);
+            if (settings.warnBeforeKick && warnings >= settings.maxWarnings) {
+              const botIds = [...new Set([sock?.user?.id, sock?.user?.lid,
+                sock?.authState?.creds?.me?.id, sock?.authState?.creds?.me?.lid].filter(Boolean))];
+              if (perms.botIsGroupAdmin(botIds[0], groupMeta, botIds)) {
+                try {
+                  await sock.groupParticipantsUpdate(jid, [actorJid || senderJid], 'remove');
+                  moderation.clearWarnings(jid, numFromJid(actorJid || senderJid) || actorJid || senderJid);
+                } catch (e) { logger.warn({ jid, err: e.message }, 'flood warning-limit removal failed'); }
+              }
+            }
+          }
+        }
         if (reason) {
-          const botIds = [...new Set([...(selfNums || []), sock?.user?.id, sock?.user?.lid,
+          const botIds = [...new Set([sock?.user?.id, sock?.user?.lid,
             sock?.authState?.creds?.me?.id, sock?.authState?.creds?.me?.lid].filter(Boolean))];
           if (perms.botIsGroupAdmin(botIds[0], groupMeta, botIds)) {
             try {
@@ -1109,21 +1247,7 @@ if (/^(self[- ]?fix|fix yourself|health check)$/i.test(rawText) && perms.isOwner
     })();
     const namedBot = botNameList.some((n) => {
       if (!n || !rawText) return false;
-      const name = String(n).trim();
-      if (!name) return false;
-      // ONLY treat as address when the bot name starts the message (or after hey/hi/@).
-      // Do NOT match "my phone is broken" mid-sentence — that caused random group replies.
-      try {
-        const esc = name.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
-        return new RegExp(
-          `^(?:@)?(?:hey\\s+|hi\\s+|yo\\s+|oi\\s+|please\\s+)?${esc}\\b`,
-          'i'
-        ).test(String(rawText).trim());
-      } catch {
-        const t = String(rawText).trim().toLowerCase();
-        const nl = name.toLowerCase();
-        return t === nl || t.startsWith(nl + ' ') || t.startsWith('@' + nl);
-      }
+      return botNamePattern(n).test(String(rawText).trim());
     });
     // HARD rule: groups only respond when @mentioned, reply-to-bot, or bot name starts the message.
     // Owners are never auto-addressed for normal chat (that caused hopping on every message).
@@ -1136,14 +1260,7 @@ if (/^(self[- ]?fix|fix yourself|health check)$/i.test(rawText) && perms.isOwner
       : false;
 
     // Strip leading bot name / @mention noise so commands match cleanly.
-    let cleanText = String(rawText || '');
-    for (const n of botNameList) {
-      if (!n) continue;
-      try {
-        cleanText = cleanText.replace(new RegExp(`^[@]?${String(n).replace(/[.*+?^${}()|[\]\\]/g, '\\$&')}[,:;\\s-]*`, 'i'), '');
-      } catch {}
-    }
-    cleanText = cleanText.replace(/^@\d{6,}\s*/g, '').trim();
+    const cleanText = stripBotAddress(rawText, botNameList);
 
     const pluginContext = {
       sock,
@@ -1155,7 +1272,18 @@ if (/^(self[- ]?fix|fix yourself|health check)$/i.test(rawText) && perms.isOwner
       groupMeta,
       mentions: resolvedMentions,
       quotedParticipant,
+      quotedText: quotedText || null,
+      imageMime: mt.imageMessage?.mimetype || quotedUnwrapped?.imageMessage?.mimetype || '',
       botJids: selfNums,
+      messageMeta: {
+        present: !!msg && typeof msg === 'object',
+        id: msg.key?.id || '',
+        type: Object.keys(msg.message || {})[0] || 'unknown',
+        fromMe: !!msg.key?.fromMe,
+        quoted: !!quotedText,
+        mentions: Array.isArray(resolvedMentions) ? resolvedMentions.length : 0,
+        groupMembers: Array.isArray(groupMeta?.participants) ? groupMeta.participants.length : null,
+      },
     };
     const isAddressed = !isGroup
       || mentionedBot
@@ -1182,12 +1310,45 @@ if (/^(self[- ]?fix|fix yourself|health check)$/i.test(rawText) && perms.isOwner
       // addressing is required: @mention, reply to the bot, or bot name.
       // Owner control commands remain available without a tag because they are
       // explicit privileged commands, not conversational replies.
-      const ownerControlCommand = /^(?:private|public|open|unlock|lockdown|owner[- ]only|group[- ]only|groups[- ]only|dm[- ]only|dms[- ]only|private[- ]chat[- ]only|all[- ]chats|scope[- ]all|all|maintenance(?:\s+(?:on|off))?|ignore(?:\s+(?:this\s+)?(?:chat|here))?|mute(?:\s+(?:this\s+)?(?:chat|here))?|silence(?:\s+(?:this\s+)?(?:chat|here))?|listen(?:\s+(?:to\s+)?(?:this\s+)?(?:chat|here))?|unignore(?:\s+(?:this\s+)?(?:chat|here))?|unsilence(?:\s+(?:this\s+)?(?:chat|here))?|clear\s+ignored(?:\s+chats)?|owner\s+status|bot\s+status|mode(?:\s+(?:public|private))?)$/i;
-      const addressedNow = !isGroup || isAddressed || (senderIsElevated && ownerControlCommand.test(t));
+      const ownerControlCommand = /^(?:private|public|open|unlock|lockdown|owner[- ]only|group[- ]only|groups[- ]only|dm[- ]only|dms[- ]only|private[- ]chat[- ]only|all[- ]chats|scope[- ]all|all|maintenance(?:\s+(?:on|off))?|ignore(?:\s+(?:this\s+)?(?:chat|here))?|mute(?:\s+(?:this\s+)?(?:chat|here))?|silence(?:\s+(?:this\s+)?(?:chat|here))?|listen(?:\s+(?:to\s+)?(?:this\s+)?(?:chat|here))?|unignore(?:\s+(?:this\s+)?(?:chat|here))?|unsilence(?:\s+(?:this\s+)?(?:chat|here))?|clear\s+ignored(?:\s+chats)?|owner\s+status|bot\s+status|autostatus\s+view(?:\s+(?:on|off|enable|disable|status))?|autotyping(?:\s+(?:on|off|enable|disable|status))?|mode(?:\s+(?:public|private))?)$/i;
+      const addressedNow = !isGroup || isAddressed || (senderIsElevated && ownerControlCommand.test(t))
+        || (senderIsOwner && /^restart$/i.test(t));
       if (addressedNow) {
+      const sendPlainCommandText = sendText;
       const fastHandled = await (async () => {
+        const sendText = (target, body, opts = {}) => sendPlainCommandText(target, messageLayout.commandResponse(body), opts);
         const pluginResult = await commandPlugins.route(pluginContext, commandInput);
-        if (pluginResult.handled) return sendText(jid, pluginResult.text || '');
+        if (pluginResult.handled) {
+          const sent = await sendText(jid, pluginResult.text || '');
+          if (pluginResult.restartAfterReply) {
+            setTimeout(() => {
+              flushAllSync();
+              logger.info('Owner requested restart; exiting for supervisor restart.');
+              process.exit(0);
+            }, 1500);
+          }
+          return sent;
+        }
+        const autoStatusCommand = /^(autostatus\s+view|autotyping)(?:\s+(on|off|enable|disable|status))?$/i.exec(t);
+          if (autoStatusCommand) {
+          if (!perms.isOwner(actorJid) && !perms.isOwner(senderJid)) return sendText(jid, messageLayout.accessDenied('owner'));
+          const feature = autoStatusCommand[1].toLowerCase().startsWith('autostatus')
+            ? 'statusView'
+            : 'typing';
+          const action = (autoStatusCommand[2] || 'status').toLowerCase();
+          const enabled = action === 'on' || action === 'enable'
+            ? true
+            : action === 'off' || action === 'disable'
+              ? false
+              : null;
+          if (enabled !== null) {
+            if (feature === 'statusView') autoPresence.setStatusViewEnabled(enabled);
+            else autoPresence.setTypingEnabled(enabled);
+          }
+          const current = autoPresence.getSettings();
+          const label = feature === 'statusView' ? 'Auto status view' : 'Auto typing';
+          return sendText(jid, `✅ ${label} is ${current[feature] ? 'ON' : 'OFF'}.\nUse *${feature === 'statusView' ? 'autostatus view' : 'autotyping'} on/off* to change it.`);
+        }
         // Owner-only sub-agent status/list. Shows the worker roster and configured backends
         // without exposing API keys.
         if (perms.isOwner(actorJid) && /^(?:subagents?|agents?)\s+(?:list|status)$/i.test(t)) {
@@ -1297,8 +1458,10 @@ if (/^(self[- ]?fix|fix yourself|health check)$/i.test(rawText) && perms.isOwner
         }
         // daily question removed
         // group challenge removed
+        if (/^normal\s+menu$/i.test(t)) return sendText(jid, buildNormalMenuText());
         if (/^(help|menu|commands)$/i.test(t)) return sendText(jid, buildMenuText(senderIsOwner));
-        if (/^(\/|!)?ping$/i.test(t)) return sendText(jid, '🏓 pong — I\'m alive.');        // profile/leveling removed
+        const statusAlias = t.match(/^(?:\/|!)?(up|ping|ping2|uptime|alive|test)$/i);
+        if (statusAlias) return sendText(jid, statusCommandCard(statusAlias[1]));
 
         if (perms.isOwner(actorJid) && /^broadcast\s+/i.test(t)) {
           const text = t.replace(/^broadcast\s+/i, '');
@@ -1321,7 +1484,7 @@ if (/^(self[- ]?fix|fix yourself|health check)$/i.test(rawText) && perms.isOwner
 
     // Social link download: autolink ON, or user asked to download, or message is mostly a social URL
     try {
-      const mediaDownloader = require('../features/mediaDownloader');
+      const mediaDownloader = require('../features').mediaDownloader;
       const urls = rawText ? mediaDownloader.extractUrls(rawText) : [];
       const askedDownload = /\b(download|save|fetch|get|pull|dl)\b/i.test(rawText || '')
         || /\b(download|save|fetch|dl)\s+(this|the|that)?\s*(post|video|image|reel|link)?\b/i.test(rawText || '');
@@ -1488,12 +1651,15 @@ if (/^(self[- ]?fix|fix yourself|health check)$/i.test(rawText) && perms.isOwner
     }
 
     const mediaPluginResult = await commandPlugins.handleMedia(pluginContext, cleanText.trim(), imageBuffer || quotedImageBuffer);
-    if (mediaPluginResult.handled) return sendText(jid, mediaPluginResult.text || '');
+    if (mediaPluginResult.handled) return sendCommandText(jid, mediaPluginResult.text || '');
 
     await typing(jid, true);
 
     try {
       // --- 3. tiny built-ins that don't need the model ---
+      if (/^normal\s+menu$/i.test(commandPlugins.parseCommand(cleanText.trim()).text)) {
+        return sendCommandText(jid, buildNormalMenuText());
+      }
       if (/^(help|menu|commands)$/i.test(cleanText.trim())) {
         return sendText(jid, buildMenuText(senderIsOwner));
       }
@@ -1703,12 +1869,11 @@ if (/^(self[- ]?fix|fix yourself|health check)$/i.test(rawText) && perms.isOwner
         }
 
       }
-      if (/^ping$/i.test(cleanText.trim())) {
-        return sendText(jid, '🏓 pong — I\'m alive.');
-      }
+      const statusAlias = cleanText.trim().match(/^(?:\/|!)?(up|ping|ping2|uptime|alive|test)$/i);
+      if (statusAlias) return sendText(jid, statusCommandCard(statusAlias[1]));
       // Full games module: wordgrid (visual), trivia, scramble, hangman, blackjack, etc.
       try {
-        const games = require('../features/games');
+        const games = require('../features').games;
         const tGame = cleanText.trim();
         const tLower = tGame.toLowerCase();
         const displayName = (typeof who === 'string' && who) || names.displayLabel?.(resolvedSenderJid, isGroup ? jid : null, groupMeta) || numFromJid(senderJid);
@@ -1717,7 +1882,7 @@ if (/^(self[- ]?fix|fix yourself|health check)$/i.test(rawText) && perms.isOwner
         if (/^(stop\s*game|end\s*game|cancel\s*game|quit\s*game)$/i.test(tGame)) {
           if (games.current(jid)) {
             games.end(jid);
-            return sendText(jid, 'game stopped.');
+            return sendCommandText(jid, 'game stopped.');
           }
         }
 
@@ -1757,11 +1922,11 @@ if (/^(self[- ]?fix|fix yourself|health check)$/i.test(rawText) && perms.isOwner
           const bet = parseInt(tGame.match(/slot\s+(\d+)/i)[1], 10);
           started = games.startSlot(jid, resolvedSenderJid || senderJid, bet);
         } else if (/^(games|game\s*list|list\s*games)\b/i.test(tGame)) {
-          return sendText(jid, '🎀 *games*\nwordgrid · trivia · scramble · guess · riddle · hangman · crossword · spelling bee · wyr · emoji · quiz · ttt · blackjack <bet> · coinflip <bet> · slot <bet>\n\nstop game to cancel.');
+          return sendCommandText(jid, '🎀 *games*\nwordgrid · trivia · scramble · guess · riddle · hangman · crossword · spelling bee · wyr · emoji · quiz · ttt · blackjack <bet> · coinflip <bet> · slot <bet>\n\nstop game to cancel.');
         } else if (/^game\s*leaderboard\b/i.test(tGame)) {
           const lb = games.leaderboard();
-          if (!lb.length) return sendText(jid, 'no wins yet.');
-          return sendText(jid, '🏆 *game wins*\n' + lb.map(([u, w], i) => `${i + 1}. ${u} — ${w}`).join('\n'));
+          if (!lb.length) return sendCommandText(jid, 'no wins yet.');
+          return sendCommandText(jid, '🏆 *game wins*\n' + lb.map(([u, w], i) => `${i + 1}. ${u} — ${w}`).join('\n'));
         }
 
         if (started) {
@@ -1862,24 +2027,31 @@ if (/^(self[- ]?fix|fix yourself|health check)$/i.test(rawText) && perms.isOwner
 
       if (perms.isOwner(actorJid) && /^broadcast\s+/i.test(cleanText.trim())) {
         const text = cleanText.replace(/^broadcast\s+/i, '');
-        return sendText(jid, `📣 Broadcast queued: "${text}" (hook this up to your known-chats list in index.js).`);
+        return sendCommandText(jid, `📣 Broadcast queued: "${text}" (hook this up to your known-chats list in index.js).`);
       }
 
       // --- 3.4 owner-defined custom commands: exact-match trigger -> canned response,
       // deterministic and instant, checked before games/obsidian/AI. ---
       const customResponse = customCommands.match(cleanText);
       if (customResponse !== null) {
-        return sendText(jid, customResponse);
+        return sendCommandText(jid, customResponse);
       }
 
       // --- 3.6 OBSIDIAN commands: owner tools, group control, fun, utils. ---
       const obsRes = await obsidian.route(sock, jid, senderJid, cleanText, resolvedMentions);
       if (obsRes.handled) {
         if (obsRes.text === null) return; // command produced no visible reply (e.g. leave/mass)
-        return sendText(jid, obsRes.text);
+        return sendCommandText(jid, obsRes.text);
       }
 
       // --- 4. the real agent: LLM + tools ---
+      try { await typing(jid, true); } catch {}
+      if (msg?.key?.id) {
+        processingReactionPromise = Promise.resolve()
+          .then(() => sock.sendMessage(jid, { react: { text: '⏳', key: msg.key } }))
+          .then(() => { processingReactionSent = true; })
+          .catch(() => {});
+      }
       const userLang = (() => { try { return partyExtras.getLang(resolvedSenderJid || senderJid); } catch { return 'en'; } })();
       const _zipCtx = (() => { try { return zipMemory.contextBlock(jid); } catch { return ''; } })();
       const _buildCtx = (() => {
@@ -2056,14 +2228,6 @@ User language preference: ${userLang}. Reply in that language when reasonable.`)
         }
       }
 
-      // Energy-matched reaction on the inbound message (sparse, human-feeling).
-      try {
-        const e = energyEmoji(effectiveClean || rawText);
-        if (e && msg?.key && Math.random() < 0.45) {
-          await sock.sendMessage(jid, { react: { text: e, key: msg.key } }).catch(() => {});
-        }
-      } catch {}
-
       // Build the user turn: media (image/video/audio) block, and/or attachment info text.
       let userText;
       if (mediaContent) {
@@ -2233,10 +2397,6 @@ User language preference: ${userLang}. Reply in that language when reasonable.`)
         }
       } catch {}
 
-      // Pace the reply like a person: show "typing...", wait roughly as long as it'd
-      // take to read + type the answer, then send. Keeps it well under WhatsApp's own
-      // presence timeout so it doesn't look stuck.
-      
     // pack add: text message replying to sticker
     if (isAddressed || !isGroup) {
       try {
@@ -2261,9 +2421,6 @@ User language preference: ${userLang}. Reply in that language when reasonable.`)
         .replace(/\n{3,}/g, '\n\n')
         .trim();
       if (!answer) return;
-
-      await typing(jid, true);
-      await new Promise((r) => setTimeout(r, humanDelayMs(answer)));
 
       // If the user spoke via a voice note / audio, reply with a voice note (UK female voice).
       const isAudioIn = curMediaType === 'audioMessage' || mt.ptvMessage;
@@ -2350,6 +2507,12 @@ User language preference: ${userLang}. Reply in that language when reasonable.`)
       await notifyOwnerError(`⚠️ *Error report*\nChat: ${jid}\nError: ${e.message}\n\n\`\`\`${String(e.stack || '').slice(0, 600)}\`\`\``);
     } finally {
       await typing(jid, false);
+      if (processingReactionPromise) {
+        await processingReactionPromise;
+        if (processingReactionSent && msg?.key) {
+          await sock.sendMessage(jid, { react: { text: '', key: msg.key } }).catch(() => {});
+        }
+      }
     }
     } catch (outerErr) {
       try {
@@ -2363,4 +2526,4 @@ User language preference: ${userLang}. Reply in that language when reasonable.`)
   return { handleIncoming };
 }
 
-module.exports = { makeRouter, buildMenuText };
+module.exports = { makeRouter, buildMenuText, buildNormalMenuText };

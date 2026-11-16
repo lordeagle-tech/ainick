@@ -1,4 +1,3 @@
-// utils/exec.js — shared promisified child_process helpers.
 // Kept tiny so feature modules can use one consistent execFileP implementation.
 const { execFile, exec } = require('child_process');
 const { promisify } = require('util');

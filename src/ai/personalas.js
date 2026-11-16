@@ -13,8 +13,8 @@ const PERSONALAS = {
     blurb: 'Brief, practical and direct.',
     overlay: 'Be especially concise and practical. Stay respectful; do not become hostile.',
   },
-  broken: {
-    id: 'broken',
+  classic: {
+    id: 'classic',
     label: 'Classic',
     blurb: 'Direct, technically focused and concise.',
     overlay: 'Prioritize clear technical answers and concise execution updates.',
@@ -45,15 +45,20 @@ const PERSONALAS = {
   },
 };
 
-const requestedDefault = String(process.env.PERSONA_DEFAULT || 'nick').toLowerCase();
+function normalizeId(id) {
+  const value = String(id || '').toLowerCase();
+  return value === 'broken' ? 'classic' : value;
+}
+
+const requestedDefault = normalizeId(process.env.PERSONA_DEFAULT || 'nick');
 const DEFAULT_ID = PERSONALAS[requestedDefault] ? requestedDefault : 'nick';
 function list() {
   return Object.values(PERSONALAS).map(({ id, label, blurb }) => ({ id, label, blurb }));
 }
 function get(id) {
-  return PERSONALAS[String(id || '').toLowerCase()] || PERSONALAS[DEFAULT_ID];
+  return PERSONALAS[normalizeId(id)] || PERSONALAS[DEFAULT_ID];
 }
 function defaultId() {
   return DEFAULT_ID;
 }
-module.exports = { list, get, defaultId, PERSONALAS };
+module.exports = { list, get, defaultId, normalizeId, PERSONALAS };

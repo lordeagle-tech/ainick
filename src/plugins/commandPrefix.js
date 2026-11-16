@@ -3,11 +3,18 @@
 const { Collection } = require('../db');
 const settings = new Collection('command_plugin_settings', {});
 const PREFIX_KEY = 'prefix';
-const PREFIX_RE = /^[!#$%&*+,.?:~]{1,3}$/;
+const MAX_PREFIX_GRAPHEMES = 3;
+const graphemeSegmenter = new Intl.Segmenter(undefined, { granularity: 'grapheme' });
+
+function isValidPrefix(value) {
+  if (typeof value !== 'string' || !value || /\s/u.test(value)) return false;
+  const graphemes = [...graphemeSegmenter.segment(value)];
+  return graphemes.length <= MAX_PREFIX_GRAPHEMES;
+}
 
 function getPrefix() {
   const value = settings.get(PREFIX_KEY, '');
-  return typeof value === 'string' && PREFIX_RE.test(value) ? value : '';
+  return isValidPrefix(value) ? value : '';
 }
 
 function setPrefix(input) {
@@ -16,8 +23,8 @@ function setPrefix(input) {
     settings.set(PREFIX_KEY, '');
     return { ok: true, prefix: '' };
   }
-  if (!PREFIX_RE.test(value)) {
-    return { ok: false, error: 'Use 1–3 punctuation characters (for example `!`, `.` or `#`), or `off` to clear it.' };
+  if (!isValidPrefix(value)) {
+    return { ok: false, error: 'Use 1–3 non-space characters, including letters, symbols, or emoji; use `off` to clear it.' };
   }
   settings.set(PREFIX_KEY, value);
   return { ok: true, prefix: value };

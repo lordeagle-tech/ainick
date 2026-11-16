@@ -1,4 +1,3 @@
-// core/workSession.js — tracks what the agent is actively working on per chat+user.
 // Survives across messages so "Done?" / "what about the site?" never looks amnesiac.
 const { Collection } = require('../db');
 

@@ -1,4 +1,3 @@
-// core/siteBuilder.js — AI fenced code → structured zip (never empty).
 const fs = require('fs');
 const path = require('path');
 const os = require('os');

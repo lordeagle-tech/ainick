@@ -1,11 +1,3 @@
-// ai/client.js — talks to the active model provider (owner-switchable at runtime via
-// "model <name>") and runs the tool-calling loop: send messages -> model may request tool
-// calls -> we execute them for real -> feed results back -> repeat until the model gives a
-// plain answer.
-//
-// Also exposes generateImage() and generateVideo() for the Agnes Image / Agnes Video
-// endpoints, which are separate REST APIs (not chat completions, and always use the Agnes
-// provider regardless of which chat provider is active). See: https://agnes-ai.com/en/docs/
 const axios = require('axios');
 const config = require('../config');
 const logger = require('../logger');
@@ -338,8 +330,8 @@ function getActiveProvider() {
 
 // One-shot startup visibility: which providers actually have keys.
 try {
-  if (!global.__brokenAiProvidersLogged) {
-    global.__brokenAiProvidersLogged = true;
+  if (!global.__nickAiProvidersLogged) {
+    global.__nickAiProvidersLogged = true;
     const active = getActiveProviderName();
     const keys = providersWithKeys();
     logger.info({
@@ -566,7 +558,7 @@ class AIClient {
     }
     if (provider.style === 'gpt-android') {
       // Free GPT via ChatGPT Android anonymous API — text only, no tools
-      const gptAndroid = require('../features/gptAndroid');
+      const gptAndroid = require('../features').gptAndroid;
       // Strip tools: this path cannot execute tools; model just chats
       const textMessages = (messages || []).map((m) => {
         if (!m) return m;

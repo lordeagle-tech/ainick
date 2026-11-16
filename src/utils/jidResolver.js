@@ -1,4 +1,3 @@
-// jidResolver.js — keeps WhatsApp LID/phone-number identities consistent.
 // WhatsApp can now deliver mentions/participants as @lid. Never treat the numeric LID
 // itself as a phone number. Prefer participantAlt/participantPn/groupMetadata mappings.
 const { numFromJid } = require('./helpers');

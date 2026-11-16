@@ -3,9 +3,9 @@
  * Standalone BBC News fetcher for Node.js panels.
  * Usage: node scripts/news.js [limit]
  *
- * The WhatsApp bot uses the same scraper through src/features/bbcNews.js.
+ * The WhatsApp bot uses the same scraper from the feature media bundle.
  */
-const { scrapeNews } = require('../src/features/bbcNews');
+const { scrapeNews } = require('../src/features').bbcNews;
 
 async function main() {
   const raw = Number(process.argv[2] || 10);
