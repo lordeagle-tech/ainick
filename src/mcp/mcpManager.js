@@ -1,4 +1,3 @@
-// mcp/mcpManager.js — real MCP (Model Context Protocol) client support.
 //
 // This is a genuine MCP *client*: it spawns each configured MCP server as a child
 // process, speaks the actual MCP protocol to it over stdio using Anthropic's
