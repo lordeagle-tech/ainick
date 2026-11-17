@@ -1339,6 +1339,7 @@ if (/^(self[- ]?fix|fix yourself|health check)$/i.test(rawText) && perms.isOwner
         present: !!msg && typeof msg === 'object',
         id: msg.key?.id || '',
         type: Object.keys(msg.message || {})[0] || 'unknown',
+        quotedMediaType: ['imageMessage', 'videoMessage'].find((type) => quotedUnwrapped?.[type]) || null,
         fromMe: !!msg.key?.fromMe,
         quoted: !!quotedText,
         mentions: Array.isArray(resolvedMentions) ? resolvedMentions.length : 0,

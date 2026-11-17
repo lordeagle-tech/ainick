@@ -1265,6 +1265,9 @@ const sharp = require('sharp');
 const { Collection } = require('../db');
 const logger = require('../logger');
 const execFileP = promisify(execFile);
+const STICKER_SIZE = 512;
+const STICKER_CONTENT_SIZE = 448;
+const STICKER_MARGIN = (STICKER_SIZE - STICKER_CONTENT_SIZE) / 2;
 
 const STORAGE_DIR = path.join(__dirname, '..', '..', 'storage', 'stickers');
 if (!fs.existsSync(STORAGE_DIR)) fs.mkdirSync(STORAGE_DIR, { recursive: true });
@@ -1319,7 +1322,15 @@ function getRandom(chatId = null) {
 async function bufferToSticker(buffer) {
   try {
     return await sharp(buffer)
-      .resize(512, 512, { fit: 'contain', background: { r: 0, g: 0, b: 0, alpha: 0 } })
+      .rotate()
+      .resize(STICKER_CONTENT_SIZE, STICKER_CONTENT_SIZE, { fit: 'contain', background: { r: 0, g: 0, b: 0, alpha: 0 } })
+      .extend({
+        top: STICKER_MARGIN,
+        bottom: STICKER_MARGIN,
+        left: STICKER_MARGIN,
+        right: STICKER_MARGIN,
+        background: { r: 0, g: 0, b: 0, alpha: 0 },
+      })
       .webp({ quality: 90 })
       .toBuffer();
   } catch (e) {
@@ -1344,8 +1355,8 @@ async function videoBufferToSticker(buffer) {
     ]) {
       const filter = [
         `fps=${profile.fps}`,
-        'scale=512:512:force_original_aspect_ratio=decrease:force_divisible_by=2',
-        'pad=512:512:(ow-iw)/2:(oh-ih)/2:color=black@0',
+        `scale=${STICKER_CONTENT_SIZE}:${STICKER_CONTENT_SIZE}:force_original_aspect_ratio=decrease:force_divisible_by=2`,
+        `pad=${STICKER_SIZE}:${STICKER_SIZE}:(ow-iw)/2:(oh-ih)/2:color=black@0`,
         'format=yuva420p',
       ].join(',');
       await execFileP(ffmpeg, [

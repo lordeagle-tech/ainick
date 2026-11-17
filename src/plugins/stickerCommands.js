@@ -5,6 +5,19 @@ const stickers = require('../features').stickers;
 const logger = require('../logger');
 
 const menuCommands = ['sticker', 's'];
+const usageText = 'Send or reply to an image or video with `sticker` (or `s`) to convert it.';
+
+async function route(ctx, input) {
+  const parsed = commandPrefix.parseCommand(input);
+  if (!/^(?:sticker|s)$/i.test(parsed.text.trim())) return { handled: false };
+  if (commandPrefix.needsPrefix(parsed)) {
+    return { handled: true, text: `Use your command prefix: \`${parsed.prefix}sticker\` or \`${parsed.prefix}s\`.` };
+  }
+  if (['imageMessage', 'videoMessage'].includes(ctx.messageMeta?.quotedMediaType)) {
+    return { handled: false };
+  }
+  return { handled: true, text: usageText };
+}
 
 async function handleMedia(_ctx, input, imageBuffer, videoBuffer) {
   const parsed = commandPrefix.parseCommand(input);
@@ -14,7 +27,7 @@ async function handleMedia(_ctx, input, imageBuffer, videoBuffer) {
     return { handled: true, text: `Use your command prefix: \`${parsed.prefix}sticker\` or \`${parsed.prefix}s\`.` };
   }
   if (!imageBuffer && !videoBuffer) {
-    return { handled: true, text: 'Send or reply to an image or video with `sticker` (or `s`) to convert it.' };
+    return { handled: true, text: usageText };
   }
 
   if (imageBuffer) {
@@ -37,4 +50,4 @@ async function handleMedia(_ctx, input, imageBuffer, videoBuffer) {
   }
 }
 
-module.exports = { handleMedia, menuCommands };
+module.exports = { route, handleMedia, menuCommands };

@@ -43,6 +43,8 @@ async function route(ctx, text) {
   if (server.handled) return server;
   const music = await musicCommands.route(ctx, text);
   if (music.handled) return music;
+  const sticker = await stickerCommands.route(ctx, text);
+  if (sticker.handled) return sticker;
   const github = await githubCommands.route(ctx, text);
   if (github.handled) return github;
   const keith = await keithApis.route(ctx, text);
