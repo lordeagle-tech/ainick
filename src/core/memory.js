@@ -122,7 +122,7 @@ function similarText(a, b) {
 /** History for the model: collapse stuck repeated assistant loops.
  * Also caps the window at MAX_RECENT_TURNS so the context never bloats.
  * Older turns get summarised via getUserMemorySummary, not dumped raw. */
-const MAX_RECENT_TURNS = Number(process.env.MEMORY_PROMPT_TURNS || 100);
+const MAX_RECENT_TURNS = Number(process.env.MEMORY_PROMPT_TURNS || 24);
 
 function getScopedForPrompt(chatId, userId) {
   const arr = getScoped(chatId, userId);

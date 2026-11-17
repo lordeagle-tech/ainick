@@ -8,13 +8,22 @@ const keithApis = require('./keithApis');
 const checkerTools = require('./checkerTools');
 const serverTools = require('./serverTools');
 const musicCommands = require('./musicCommands');
+const stickerCommands = require('./stickerCommands');
 const githubCommands = require('./githubCommands');
 const fileCommands = require('./fileCommands');
 const ownerDiagnostics = require('./ownerDiagnostics');
 
 function isExplicitCommand(text) {
   const command = commandPrefix.parseCommand(text).text.trim();
-  return /^normal\s+menu$/i.test(command)
+  const normalized = command.toLowerCase();
+  const listedCommand = getMenuSections().some(({ commands }) =>
+    commands.some((name) => {
+      const candidate = String(name || '').trim().toLowerCase();
+      return candidate && (normalized === candidate || normalized.startsWith(`${candidate} `));
+    })
+  );
+  return listedCommand
+    || /^normal\s+menu$/i.test(command)
     || checkerTools.isCommand(text)
     || serverTools.isCommand(text)
     || musicCommands.isCommand(text)
@@ -49,7 +58,9 @@ async function route(ctx, text) {
   return groupControl.route(ctx, text);
 }
 
-async function handleMedia(ctx, text, imageBuffer) {
+async function handleMedia(ctx, text, imageBuffer, videoBuffer) {
+  const sticker = await stickerCommands.handleMedia(ctx, text, imageBuffer, videoBuffer);
+  if (sticker.handled) return sticker;
   const checker = await checkerTools.handleMedia(ctx, text, imageBuffer);
   if (checker.handled) return checker;
   const groups = await groupCommands.handleMedia(ctx, text, imageBuffer);
@@ -63,7 +74,7 @@ function getMenuSections() {
   return [
     { title: '𝐂𝐇𝐄𝐂𝐊𝐄𝐑 𝐓𝐎𝐎𝐋𝐒', commands: checkerTools.menuCommands },
     { title: '𝐒𝐄𝐑𝐕𝐄𝐑 𝐈𝐍𝐅𝐎', commands: serverTools.menuCommands },
-    { title: '𝐌𝐔𝐒𝐈𝐂 & 𝐌𝐄𝐃𝐈𝐀', commands: musicCommands.menuCommands },
+    { title: '𝐌𝐔𝐒𝐈𝐂 & 𝐌𝐄𝐃𝐈𝐀', commands: [...musicCommands.menuCommands, ...stickerCommands.menuCommands] },
     { title: '𝐆𝐈𝐓𝐇𝐔𝐁', commands: githubCommands.menuCommands },
     { title: 'API Commands', commands: keithApis.menuCommands },
     { title: '𝐆𝐑𝐎𝐔𝐏 𝐂𝐎𝐌𝐌𝐀𝐍𝐃𝐒', commands: [...groupControl.menuCommands, ...groupCommands.menuCommands] },

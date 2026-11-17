@@ -285,9 +285,6 @@ async function route(ctx, input) {
   const parsed = commandPrefix.parseCommand(input);
   const text = parsed.text.trim();
   if (!isCommand(input)) return { handled: false };
-  if (commandPrefix.needsPrefix(parsed)) {
-    return { handled: true, text: `This command needs the configured prefix. Try: \`${parsed.prefix}${text}\`` };
-  }
   try {
     const result = await handle(ctx, text);
     return result ? { handled: true, text: result } : { handled: false };

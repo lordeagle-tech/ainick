@@ -736,10 +736,22 @@ function isStaticOwner(num) {
 function isOwner(jidOrNum) {
   const candidates = Array.isArray(jidOrNum) ? jidOrNum : [jidOrNum];
   const r = all();
+  let aliasMap = null;
+  try { aliasMap = require('../utils/jidResolver').aliases(); } catch {}
   for (const c of candidates) {
     if (!c) continue;
     if (isStaticOwner(c)) return true;
     if ((r.owners || []).some((o) => phonesMatch(o, c))) return true;
+    // Group traffic may identify the owner only by their @lid. Resolve known
+    // LID↔phone pairs and check the phone side too.
+    const raw = String(c);
+    const bareRaw = raw.replace(/:\d+@/, '@');
+    const alts = [aliasMap?.get(raw), aliasMap?.get(bareRaw)];
+    for (const alt of alts) {
+      if (!alt) continue;
+      if (isStaticOwner(alt)) return true;
+      if ((r.owners || []).some((o) => phonesMatch(o, alt))) return true;
+    }
   }
   return false;
 }

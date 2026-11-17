@@ -1,6 +1,6 @@
 // Suppress noisy libsignal session lifecycle logs that are printed via console.
 (() => {
-  const noisy = /^(Closing session:|Removing old closed session:)/;
+  const noisy = /^(Closing session:|Removing old closed session:|Closing open session in favor of incoming prekey bundle$|Decrypted message with closed session\.$)/;
   for (const method of ['info', 'log', 'warn']) {
     const original = console[method];
     if (typeof original !== 'function') continue;

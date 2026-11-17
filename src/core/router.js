@@ -41,7 +41,7 @@ const messageLayout = require('../utils/messageLayout');
 const spam = new Map();
 // Serialize turns per chat/user to prevent overlapping history updates.
 const agentQueues = new Map();
-// Combine rapid messages from the same sender and chat before replying.
+// Combine rapid messages from the same user (DM or group) before replying.
 const coalesceBuffers = new Map();
 const COALESCE_MS = Number(process.env.MESSAGE_COALESCE_MS ?? 350);       // brief window to combine split messages
 const COALESCE_MAX_MS = Number(process.env.MESSAGE_COALESCE_MAX_MS ?? 1500); // cap the combine window
@@ -136,7 +136,7 @@ function logGroupMessage(groupId, sender, text) {
   groupChatLog.set(groupId, list);
 }
 
-// sticker-reply cooldown: only auto-reply to stickers once per chat every 3 hours
+// Limit automatic sticker replies per sender and chat to avoid spam.
 const stickerCooldown = new Map();
 const STICKER_COOLDOWN_MS = 3 * 60 * 60 * 1000;
 
@@ -163,17 +163,34 @@ function formatCommandUptime() {
   return [days && `${days}d`, hours && `${hours}h`, minutes && `${minutes}m`, `${seconds}s`].filter(Boolean).join(' ');
 }
 
-function statusCommandCard(command) {
+function statusCommandCard(command, startedAt) {
+  const responseMs = startedAt ? Number(process.hrtime.bigint() - startedAt) / 1e6 : null;
+  const pingLines = ['Pong!', `Response time: ${responseMs === null ? 'n/a' : `${responseMs.toFixed(1)} ms`}`];
   const replies = {
     up: { title: 'BOT ONLINE', icon: '✅', lines: ['Nick AI is up and running.'] },
-    ping: { title: 'PING', icon: '🏓', lines: ['Pong!', 'Response check successful.'] },
-    ping2: { title: 'PING 2', icon: '🏓', lines: ['Pong!', 'Secondary ping check successful.'] },
+    ping: { title: 'PING', icon: '🏓', lines: pingLines },
+    ping2: { title: 'PING 2', icon: '🏓', lines: pingLines },
     uptime: { title: 'UPTIME', icon: '⏱️', lines: [`Runtime: ${formatCommandUptime()}`] },
     alive: { title: 'BOT ALIVE', icon: '🤖', lines: ['Nick AI is online and ready.'] },
     test: { title: 'TEST', icon: '✅', lines: ['Test successful.', 'Command handler is working.'] },
   };
   const reply = replies[String(command || '').toLowerCase()];
   return reply ? messageLayout.commandCard(reply.title, reply.lines, reply.icon) : null;
+}
+
+const CORE_NORMAL_MENU_SECTIONS = [
+  { title: 'Menu & Status', commands: ['menu', 'help', 'commands', 'normal menu', 'up', 'alive', 'ping', 'ping2', 'uptime', 'test'] },
+  { title: 'Games', commands: ['games', 'game list', 'game leaderboard', 'stop game', 'wordgrid', 'trivia', 'scramble', 'guess', 'riddle', 'hangman', 'crossword', 'spelling bee', 'wyr', 'emoji game', 'quiz', 'ttt', 'blackjack', 'coinflip', 'slot'] },
+  { title: 'Utilities', commands: ['usage', 'ctx', 'compact', 'callad', 'donate', 'support', 'setprefix'] },
+];
+const EXACT_CORE_COMMANDS = new Set(CORE_NORMAL_MENU_SECTIONS[0].commands);
+
+function isCoreMenuCommand(input) {
+  const text = String(input || '').trim().toLowerCase();
+  return CORE_NORMAL_MENU_SECTIONS.some(({ commands }) => commands.some((name) => {
+    const candidate = name.toLowerCase();
+    return text === candidate || (!EXACT_CORE_COMMANDS.has(candidate) && text.startsWith(`${candidate} `));
+  }));
 }
 
 function buildMenuText(isOwner = false) {
@@ -222,56 +239,36 @@ function buildMenuText(isOwner = false) {
 ╰──────────⊷`;
 }
 
-function buildNormalMenuText() {
+function buildNormalMenuText({ isOwner = false, isGroup = false } = {}) {
+  const prefix = commandPlugins.getPrefix();
   const pluginSections = commandPlugins.getMenuSections()
+    .filter(({ title }) => {
+      if (!isOwner && title === 'Owner Only') return false;
+      if (!isOwner && title === '𝐆𝐈𝐓𝐇𝐔𝐁') return false;
+      if (!isGroup && title === '𝐆𝐑𝐎𝐔𝐏 𝐂𝐎𝐌𝐌𝐀𝐍𝐃𝐒') return false;
+      return true;
+    })
+    .map(({ title, commands }) => ({
+      title,
+      commands: title === '𝐒𝐄𝐑𝐕𝐄𝐑 𝐈𝐍𝐅𝐎' && !isOwner
+        ? commands.filter((name) => name !== 'vpsinfo')
+        : commands,
+    }))
+    .filter(({ commands }) => commands.length)
     .map(({ title, commands }) => [
       `│ ❐➻ *${title}*`,
-      ...commands.map((name) => `│ ❐➻ \`${name}\``),
+      ...commands.map((name) => `│ ❐➻ \`${prefix}${name}\``),
     ].join('\n'))
     .join('\n│\n');
+  const coreSections = CORE_NORMAL_MENU_SECTIONS.map(({ title, commands }) => {
+    const visible = title === 'Utilities' && !isOwner
+      ? commands.filter((name) => name !== 'setprefix')
+      : commands;
+    return [`│ ❐➻ *${title}*`, ...visible.map((name) => `│ ❐➻ \`${name}\``)].join('\n');
+  }).join('\n│\n');
 
   return `╭─〘 *𝐍𝐎𝐑𝐌𝐀𝐋 𝐌𝐄𝐍𝐔* 〙
-│ ❐➻ *Menu & Status*
-│ ❐➻ \`menu\`
-│ ❐➻ \`help\`
-│ ❐➻ \`commands\`
-│ ❐➻ \`normal menu\`
-│ ❐➻ \`up\`
-│ ❐➻ \`alive\`
-│ ❐➻ \`ping\`
-│ ❐➻ \`ping2\`
-│ ❐➻ \`uptime\`
-│ ❐➻ \`test\`
-│
-│ ❐➻ *Games*
-│ ❐➻ \`games\`
-│ ❐➻ \`game list\`
-│ ❐➻ \`game leaderboard\`
-│ ❐➻ \`stop game\`
-│ ❐➻ \`wordgrid\`
-│ ❐➻ \`trivia\`
-│ ❐➻ \`scramble\`
-│ ❐➻ \`guess\`
-│ ❐➻ \`riddle\`
-│ ❐➻ \`hangman\`
-│ ❐➻ \`crossword\`
-│ ❐➻ \`spelling bee\`
-│ ❐➻ \`wyr\`
-│ ❐➻ \`emoji game\`
-│ ❐➻ \`quiz\`
-│ ❐➻ \`ttt\`
-│ ❐➻ \`blackjack\`
-│ ❐➻ \`coinflip\`
-│ ❐➻ \`slot\`
-│
-│ ❐➻ *Utilities*
-│ ❐➻ \`usage\`
-│ ❐➻ \`ctx\`
-│ ❐➻ \`compact\`
-│ ❐➻ \`callad\`
-│ ❐➻ \`donate\`
-│ ❐➻ \`support\`
-│ ❐➻ \`setprefix\`
+${coreSections}
 │
 ${pluginSections}
 ╰──────────⊷`;
@@ -290,15 +287,9 @@ function botNamePattern(name) {
   );
 }
 
-function botNameAnywherePattern(name) {
+function botNameWordPattern(name) {
   const escaped = escapeName(name);
-  // Match bot name as a standalone token anywhere in the message.
-  return new RegExp(`(?<![\\p{L}\\p{N}])@?${escaped}(?![\\p{L}\\p{N}])`, 'iu');
-}
-
-function hasBotName(text, botNameList) {
-  const s = String(text || '');
-  return (botNameList || []).some((n) => n && botNameAnywherePattern(n).test(s));
+  return new RegExp(`(?:^|[^\\p{L}\\p{N}@])${escaped}(?=$|[^\\p{L}\\p{N}])`, 'iu');
 }
 
 function stripBotAddress(text, botNameList) {
@@ -446,7 +437,8 @@ function makeRouter({ sock, aiClient, senderName }) {
     if (result.text !== undefined && result.text !== null) return sendCommandText(jid, result.text, merged);
   }
 
-  async function handleIncoming(msg) {
+async function handleIncoming(msg) {
+    const commandStartedAt = process.hrtime.bigint();
     // Rate-limit owner error DMs (same signature at most once per 2 min)
     if (!handleIncoming._errCooldown) handleIncoming._errBag = new Map();
     const notifyOwnerError = async (text) => {
@@ -489,7 +481,17 @@ function makeRouter({ sock, aiClient, senderName }) {
     } catch {}
     
     const isGroup = isGroupJid(jid);
-    const senderJid = isGroup ? msg.key.participant : jid;
+    // For messages the session account sent itself (fromMe — normal typed messages,
+    // not bot output), WhatsApp sometimes omits key.participant in groups. The
+    // sender is always the session identity, so fall back to it instead of dropping.
+    const selfJids = [sock?.user?.id, sock?.user?.lid,
+      sock?.authState?.creds?.me?.id, sock?.authState?.creds?.me?.lid].filter(Boolean);
+    let senderJid = isGroup ? msg.key.participant : jid;
+    if (isGroup && msg.key.fromMe) senderJid = selfJids[0] || senderJid;
+    if (!senderJid) {
+      senderJid = msg.key.participantAlt || msg.key.participantPn
+        || msg.key.senderLid || msg.key.senderPn || msg.key.remoteJidAlt || null;
+    }
     if (!senderJid) return;
     const preJidMap = jidResolver.buildMap(sock, msg, null);
     let actorJid = jidResolver.resolve(senderJid, preJidMap);
@@ -591,35 +593,76 @@ function makeRouter({ sock, aiClient, senderName }) {
     const botNameList = (config.behavior && config.behavior.botNames) || ['broken'];
     let selfNums = jidResolver.selfIds(sock, preJidMap);
     const mentionedBot = (Array.isArray(mentions) ? mentions : [])
-      .some((m) => jidResolver.matchesAny(m, selfNums));
+      .some((m) => jidResolver.isSelfJid(m, sock));
+    const taggedOtherUser = (Array.isArray(mentions) ? mentions : []).some((mentioned) => {
+      if (jidResolver.isSelfJid(mentioned, sock)) return false;
+      const resolved = jidResolver.resolve(mentioned, preJidMap);
+      return !jidResolver.matchesAny(resolved, [
+        senderJid,
+        actorJid,
+        msg.key?.participantAlt,
+        msg.key?.participantPn,
+      ].filter(Boolean));
+    });
+    const groupMentionCall = isGroup && mentionedBot && taggedOtherUser;
     const repliedToBot = (() => {
-      try { return autoreply.isBotMessageReplied(msg); } catch { return false; }
+      try {
+        return isGroup
+          ? autoreply.isTrackedBotMessageReplied(msg)
+          : autoreply.isBotMessageReplied(msg);
+      } catch { return false; }
     })();
     const callText = rawText.normalize('NFKC').replace(/[\u200B-\u200D\uFEFF]/g, '').trim();
-    const namedBot = !!callText && hasBotName(callText, botNameList);
+    // Match Nick as a standalone name anywhere, but do not treat an @mention as a call.
+    const namedBot = !!callText
+      && botNameList.some((name) => name && botNameWordPattern(name).test(callText));
     const cleanText = stripBotAddress(callText, botNameList);
-    const builtInCommand = /^(?:help|menu|commands|normal menu|(?:\/|!)?(?:up|ping|ping2|uptime|alive|test))$/i.test(cleanText);
-    let isAddressed = mentionedBot || repliedToBot || namedBot
+    const parsedCoreText = commandPlugins.parseCommand(cleanText).text;
+    const builtInCommand = isCoreMenuCommand(parsedCoreText)
+      || /^(?:help|menu|commands|normal menu|(?:\/|!)?(?:up|ping|ping2|uptime|alive|test))$/i.test(cleanText);
+    const viewOnceCommand = /^(?:[.!/])?(?:viewonce|view\s*once|reveal|open\s*once|vv)\b/i.test(cleanText || callText || rawText || '');
+    // In groups, a mention of this account can be an ordinary tag of its human owner.
+    // Require an explicit target too before treating a group mention as a Nick call.
+    const mentionCall = mentionedBot && (!isGroup || groupMentionCall);
+    let isAddressed = mentionCall || (repliedToBot && (isGroup || !!mt.stickerMessage)) || namedBot
       || commandPlugins.parseCommand(cleanText).hadPrefix
       || builtInCommand
+      || viewOnceCommand
       || commandPlugins.isExplicitCommand(cleanText);
-    let isBareCall = !cleanText && (namedBot || mentionedBot);
+    let isBareCall = !cleanText && (namedBot || mentionCall);
+
+    // Automated level/XP notifications posted by other bots often tag this account,
+    // e.g. "🎉 @195593515315386 reached level 1!". Replying to them creates a
+    // notification loop (reply → XP → another announcement), so treat them as
+    // system noise instead of a call.
+    if (isGroup && rawText && rawText.length < 240) {
+      const levelNotice = /(?:reached|hit|is\s+now\s+at)\s+level\s+\d+|level(?:led|ed)?\s*up|gained\s+\d+\s*(?:xp|points)|\+\s*\d+\s*(?:xp|points)/i.test(rawText);
+      if (levelNotice && !rawText.includes('?')) {
+        const selfDigits = [...selfNums]
+          .map((id) => String(id).split('@')[0].split(':')[0])
+          .filter((n) => n && n.length >= 8);
+        const tagsSelf = mentionedBot || selfDigits.some((n) => rawText.includes(n));
+        if (tagsSelf) {
+          logger.debug({ jid, text: rawText.slice(0, 100) }, 'skip automated level/XP notification');
+          return;
+        }
+      }
+    }
 
     // Anti-view-once inspects only message-envelope keys; it never opens, downloads,
     // reveals, or forwards protected media. Run this before sticker/media handlers.
     const hasViewOnceEnvelope = (message) => {
       let cur = message;
       for (let i = 0; i < 6 && cur; i++) {
-        if (cur.viewOnceMessage || cur.viewOnceMessageV2 || cur.viewOnceMessageV2Extension) return true;
+        if (cur.viewOnceMessage || cur.viewOnceMessageV2 || cur.viewOnceMessageV2Extension
+          || cur.imageMessage?.viewOnce === true || cur.videoMessage?.viewOnce === true) return true;
         cur = cur.ephemeralMessage?.message || cur.editedMessage?.message
           || cur.documentWithCaptionMessage?.message || cur.message || null;
       }
       return false;
     };
-    const viewOnceHelp = 'View-once media is designed to be temporary, so I can’t reveal or forward it. Please ask the sender to resend it as a regular photo or video.';
     const containsViewOnce = hasViewOnceEnvelope(msg.message);
     if (containsViewOnce) {
-      let deleted = false;
       if (isGroup && !msg.key?.fromMe) {
         try {
           const moderation = require('../features').moderation;
@@ -636,16 +679,21 @@ function makeRouter({ sock, aiClient, senderName }) {
                 remoteJid: jid, id: msg.key.id, fromMe: !!msg.key.fromMe,
                 participant: msg.key.participant,
               }});
-              deleted = true;
             }
           }
         } catch (e) {
           logger.warn({ jid, err: e.message }, 'anti-view-once group moderation failed');
         }
       }
-      if (!deleted && isAddressed) await sendText(jid, viewOnceHelp).catch(() => {});
+      // Never reply to the sender just because a view-once message was posted or tagged.
       return;
     }
+
+    const onlyBotTag = (mentionedBot && !callText.replace(/@[^\s]+/gu, '').trim())
+      || (namedBot && !cleanText);
+    const hasAttachedMedia = !!(mt.imageMessage || mt.videoMessage || mt.audioMessage || mt.documentMessage);
+    if (onlyBotTag && !hasAttachedMedia) return;
+
     let groupMediaModerationTriggered = false;
     if (isGroup && !msg.key?.fromMe) {
       try {
@@ -685,7 +733,7 @@ function makeRouter({ sock, aiClient, senderName }) {
     // For messages sent from the session account itself, only respond when explicitly called/commanded.
     if (msg.key.fromMe && !isAddressed) return;
 
-    if (!isAddressed && !isGroup && !mentions.length) return;
+    if (!isAddressed && !isGroup) return;
 
     // --- stickers ---
     // Save every sticker; only a direct reply to the bot can trigger a response.
@@ -693,7 +741,9 @@ function makeRouter({ sock, aiClient, senderName }) {
       try {
         const stickerCtx = mt.stickerMessage?.contextInfo || {};
         const quotedId = stickerCtx.stanzaId || stickerCtx.quotedMessageId;
-        const isReplyToBot = !!quotedId && autoreply.isBotMessageReplied(msg);
+        const isReplyToBot = !!quotedId && (isGroup
+          ? autoreply.isTrackedBotMessageReplied(msg)
+          : autoreply.isBotMessageReplied(msg));
         if (isReplyToBot) {
           const meta = isGroup ? await cachedGroupMeta(sock, jid) : null;
           const identity = jidResolver.resolveIdentity(senderJid, jidResolver.buildMap(sock, msg, meta), meta);
@@ -705,18 +755,18 @@ function makeRouter({ sock, aiClient, senderName }) {
         stickers.saveSticker(buffer, { chatId: jid, senderId: numFromJid(senderJid) });
         const reply = ['😂 I see you!', 'Haha, nice one 😭', 'That sticker says enough 😂', '🤣🤣', 'I got you 😎'];
 
-        // Only a sticker explicitly sent as a reply to the bot can get a response.
+        // Only a sticker reply to one of Nick's messages triggers an automatic sticker.
         const now = Date.now();
-        const lastStickerReply = stickerCooldown.get(jid) || 0;
+        const cooldownKey = `${jid}:${senderJid}`;
+        const lastStickerReply = stickerCooldown.get(cooldownKey) || 0;
         const cooldownReady = now - lastStickerReply >= STICKER_COOLDOWN_MS;
-        const shouldReact = isAddressed && isReplyToBot && cooldownReady;
+        const shouldReact = isReplyToBot && cooldownReady;
 
         if (shouldReact) {
-          stickerCooldown.set(jid, now);
-          const back = stickers.getRandom();
-          if (back && Math.random() < 0.85) {
-            await sendSticker(jid, back, { quoted: msg });
-          } else {
+          stickerCooldown.set(cooldownKey, now);
+          const back = stickers.getRandom(jid);
+          const sent = back ? await sendSticker(jid, back, { quoted: msg }) : false;
+          if (!sent) {
             await sendText(jid, reply[Math.floor(Math.random() * reply.length)], { quoted: msg });
           }
         }
@@ -777,39 +827,52 @@ function makeRouter({ sock, aiClient, senderName }) {
     const quotedParticipantPnRaw = quotedContext?.participantPn || quotedContext?.participantAlt || null;
     const quotedMessageId = quotedContext?.stanzaId || quotedContext?.quotedMessageId || null;
 
-    // Never unwrap or download quoted view-once media, regardless of the command text,
-    // except an explicit owner reveal command replying to a view-once.
-    if (hasViewOnceEnvelope(ctxInfoDoc?.quotedMessage)) {
-      const _viewOnceCmd = /^(?:[.!/])?(?:viewonce|view\s*once|reveal|open\s*once|vv)\b/i.test(cleanText || callText || rawText || '');
-      if (isAddressed && _viewOnceCmd && (senderIsOwner || perms.isOwner(actorJid) || perms.isOwner(senderJid))) {
-        try {
-          const { toolUnlockViewOnce } = require('../ai/tools');
-          const voCtx = {
-            sock,
-            chatId: jid,
-            senderJid: actorJid || resolvedSenderJid || senderJid,
-            senderPhone: senderIdentity?.phoneNumber || jidResolver.number(senderJid, jidMap) || numFromJid(resolvedSenderJid || senderJid),
-            senderIdentity,
-            quotedContext,
-            quotedMessage,
-            quotedStanzaId: ctxInfoDoc?.stanzaId || quotedContext?.stanzaId || null,
-            quotedParticipant: quotedContext?.participant || quotedContext?.participantPn || null,
-            replyMessage: msg,
-            sendText: (t) => sendText(jid, t),
-          };
-          const voText = (cleanText || callText || rawText || '').toLowerCase();
-          const voArgs = { toDm: /\b(dm|pm|inbox|private)\b/.test(voText), dm: /\b(dm|pm|inbox|private)\b/.test(voText) };
-          const voResult = await toolUnlockViewOnce(voArgs, voCtx);
-          if (!voResult || voResult.ok === false) {
-            await sendText(jid, `⚠️ ${voResult?.error || 'Could not reveal that view-once message.'}`);
-          }
-        } catch (e) {
-          logger.warn({ jid, err: e.message }, 'view-once reveal command failed');
-          await sendText(jid, `⚠️ Could not reveal that view-once message: ${e.message}`);
-        }
-        return;
+    // View-once reveal command: owner-only, and only when there is a quoted message
+    // to work with. Tries to reveal even if the wrapper detection is imperfect.
+    if (viewOnceCommand && isAddressed) {
+      const isOwnerRequester = senderIsOwner || perms.isOwner(actorJid) || perms.isOwner(senderJid);
+      if (!isOwnerRequester) {
+        return sendText(jid, messageLayout.accessDenied('owner'));
       }
-      if (isAddressed) await sendText(jid, viewOnceHelp);
+      if (!quotedMessage && !quotedContext?.quotedMessage) {
+        return sendText(jid, '🔓 Reply directly to a view-once image/video/voice note, then send *vv* (or *viewonce*, *reveal*, *open once*) to reveal it. Add *dm* to send it to your DM.');
+      }
+      try {
+        const { toolUnlockViewOnce } = require('../ai/tools');
+        // Group metadata / full LID aliases are not resolved yet at this point in the
+        // flow, so build the identity from the message-level map we already have.
+        const voIdentity = jidResolver.resolveIdentity(senderJid, preJidMap, null);
+        const voResolvedSender = voIdentity.jid || actorJid || senderJid;
+        const voCtx = {
+          sock,
+          chatId: jid,
+          senderJid: voResolvedSender,
+          senderPhone: voIdentity.phoneNumber || jidResolver.number(senderJid, preJidMap) || numFromJid(voResolvedSender),
+          senderIdentity: voIdentity,
+          quotedContext,
+          quotedMessage,
+          quotedStanzaId: ctxInfoDoc?.stanzaId || quotedContext?.stanzaId || null,
+          quotedParticipant: quotedContext?.participant || quotedContext?.participantPn || null,
+          replyMessage: msg,
+          sendText: (t) => sendText(jid, t),
+        };
+        const voText = (cleanText || callText || rawText || '').toLowerCase();
+        const voArgs = { toDm: /\b(dm|pm|inbox|private)\b/.test(voText), dm: /\b(dm|pm|inbox|private)\b/.test(voText) };
+        const voResult = await toolUnlockViewOnce(voArgs, voCtx);
+        if (!voResult || voResult.ok === false) {
+          await sendText(jid, `⚠️ ${voResult?.error || 'Could not reveal that view-once message.'}`);
+        }
+      } catch (e) {
+        logger.warn({ jid, err: e.message }, 'view-once reveal command failed');
+        await sendText(jid, `⚠️ Could not reveal that view-once message: ${e.message}`);
+      }
+      return;
+    }
+
+    // Ignore quoted view-once media unless the sender used the explicit reveal command above.
+    if (hasViewOnceEnvelope(ctxInfoDoc?.quotedMessage)
+      || hasViewOnceEnvelope(quotedMessage)
+      || hasViewOnceEnvelope(quotedUnwrapped)) {
       return;
     }
 
@@ -1079,11 +1142,6 @@ if (/^(self[- ]?fix|fix yourself|health check)$/i.test(rawText) && perms.isOwner
     const jidMap = jidResolver.buildMap(sock, msg, groupMeta);
     const resolvedMentions = await jidResolver.normalizeManyWithSock(mentions, sock, jidMap, groupMeta);
     selfNums = jidResolver.selfIds(sock, jidMap);
-    const resolvedMentionedBot = resolvedMentions.some((mention) => jidResolver.matchesAny(mention, selfNums));
-    if (resolvedMentionedBot) {
-      isAddressed = true;
-      if (!cleanText && !namedBot) isBareCall = true;
-    }
     // Learn/resolve LID mappings from Baileys' persistent mapping store when available.
     // This is async because getPNForLID is async in Baileys 6.7.x.
     if (jidResolver.isLid(senderJid)) {
@@ -1104,6 +1162,12 @@ if (/^(self[- ]?fix|fix yourself|health check)$/i.test(rawText) && perms.isOwner
       ...(senderIdentity.aliases || []),
     ].filter(Boolean))];
     actorJid = resolvedSenderJid;
+    const responseTargetJids = isGroup && (groupMentionCall || namedBot)
+      ? resolvedMentions
+        .filter((target) => !jidResolver.isSelfJid(target, sock)
+          && !jidResolver.matchesAny(target, senderIdentityAliases))
+        .slice(0, 1)
+      : [];
 
     // Re-evaluate owner/sudo/admin with fully resolved PN + all aliases (LID-safe).
     const ownerCandidates = [
@@ -1118,6 +1182,22 @@ if (/^(self[- ]?fix|fix yourself|health check)$/i.test(rawText) && perms.isOwner
     if (senderIsOwner && !(handleIncoming._ownerLogAt > Date.now() - 300000)) {
       handleIncoming._ownerLogAt = Date.now();
       try { logger.info({ candidates: ownerCandidates.map((x) => String(x).slice(0, 24)), owners: (config.ownerIds || []).slice(0, 6) }, 'owner match OK'); } catch {}
+    }
+    // Short diagnostic: an owner-looking command from an unrecognised sender.
+    // Rate-limited so it never floods the terminal.
+    if (!senderIsOwner && rawText && /^(?:[.!\/])?(?:owner\b|addowner|addsudo|addadmin|restart|setpp|broadcast|private|public|model\b|daemon\b)/i.test(rawText)
+      && !(handleIncoming._ownerDenyLogAt > Date.now() - 60000)) {
+      handleIncoming._ownerDenyLogAt = Date.now();
+      try {
+        // console.log on purpose: pino may be quieted to 'error' via LOG_LEVEL.
+        console.log('[owner-check] denied', JSON.stringify({
+          senderJid: String(senderJid).slice(0, 32),
+          actorJid: String(actorJid).slice(0, 32),
+          identityAliases: senderIdentityAliases.map((x) => String(x).slice(0, 32)),
+          owners: (config.ownerIds || []).slice(0, 8),
+          self: [...selfNums].map((x) => String(x).slice(0, 32)),
+        }));
+      } catch {}
     }
     // Deterministic group moderation runs before the AI/address gate.
     // Admin/owner messages are exempt; violations are deleted silently.
@@ -1430,10 +1510,10 @@ if (/^(self[- ]?fix|fix yourself|health check)$/i.test(rawText) && perms.isOwner
         }
         // daily question removed
         // group challenge removed
-        if (/^normal\s+menu$/i.test(t)) return sendText(jid, buildNormalMenuText());
+        if (/^normal\s+menu$/i.test(t)) return sendText(jid, buildNormalMenuText({ isOwner: senderIsOwner, isGroup }));
         if (/^(help|menu|commands)$/i.test(t)) return sendText(jid, buildMenuText(senderIsOwner));
         const statusAlias = t.match(/^(?:\/|!)?(up|ping|ping2|uptime|alive|test)$/i);
-        if (statusAlias) return sendText(jid, statusCommandCard(statusAlias[1]));
+        if (statusAlias) return sendText(jid, statusCommandCard(statusAlias[1], commandStartedAt));
 
         if (perms.isOwner(actorJid) && /^broadcast\s+/i.test(t)) {
           const text = t.replace(/^broadcast\s+/i, '');
@@ -1615,15 +1695,30 @@ if (/^(self[- ]?fix|fix yourself|health check)$/i.test(rawText) && perms.isOwner
       }
     }
 
-    const mediaPluginResult = await commandPlugins.handleMedia(pluginContext, cleanText.trim(), imageBuffer || quotedImageBuffer);
-    if (mediaPluginResult.handled) return sendCommandText(jid, mediaPluginResult.text || '');
+    const commandImageBuffer = curMediaType === 'videoMessage' ? null : imageBuffer || quotedImageBuffer;
+    const commandVideoBuffer = curMediaType === 'imageMessage' ? null : videoBuffer || quotedVideoBuffer;
+    const mediaPluginResult = await commandPlugins.handleMedia(pluginContext, cleanText.trim(), commandImageBuffer, commandVideoBuffer);
+    if (mediaPluginResult.handled) {
+      if (mediaPluginResult.stickerBuffer) {
+        try {
+          const sent = await sock.sendMessage(jid, { sticker: mediaPluginResult.stickerBuffer }, { quoted: msg });
+          if (!sent?.key) return sendCommandText(jid, 'I converted the sticker but WhatsApp could not confirm sending it.');
+          autoreply.addBotMessage(sent.key);
+          return;
+        } catch (e) {
+          logger.warn({ err: e.message }, 'sticker command send failed');
+          return sendCommandText(jid, 'I converted the sticker but WhatsApp could not send it.');
+        }
+      }
+      return sendCommandText(jid, mediaPluginResult.text || '');
+    }
 
     await typing(jid, true);
 
     try {
       // --- 3. tiny built-ins that don't need the model ---
       if (/^normal\s+menu$/i.test(commandPlugins.parseCommand(cleanText.trim()).text)) {
-        return sendCommandText(jid, buildNormalMenuText());
+        return sendCommandText(jid, buildNormalMenuText({ isOwner: senderIsOwner, isGroup }));
       }
       if (/^(help|menu|commands)$/i.test(cleanText.trim())) {
         return sendText(jid, buildMenuText(senderIsOwner));
@@ -1835,7 +1930,7 @@ if (/^(self[- ]?fix|fix yourself|health check)$/i.test(rawText) && perms.isOwner
 
       }
       const statusAlias = cleanText.trim().match(/^(?:\/|!)?(up|ping|ping2|uptime|alive|test)$/i);
-      if (statusAlias) return sendText(jid, statusCommandCard(statusAlias[1]));
+      if (statusAlias) return sendText(jid, statusCommandCard(statusAlias[1], commandStartedAt));
       // Full games module: wordgrid (visual), trivia, scramble, hangman, blackjack, etc.
       try {
         const games = require('../features').games;
@@ -2088,6 +2183,7 @@ User language preference: ${userLang}. Reply in that language when reasonable.`)
         // instead of trying to parse a phone number out of rendered "@..." text, since that
         // text isn't always the literal number depending on the sender's WhatsApp client.
         mentionedJids: resolvedMentions || [],
+        responseTargetJids,
         contactPhones: (typeof contactPhones !== 'undefined' ? contactPhones : phonesFromMessageType(mt)) || [],
         jidMap,
         repliedToJid: quotedParticipant || null,
@@ -2215,8 +2311,31 @@ User language preference: ${userLang}. Reply in that language when reasonable.`)
             body;
         }
         userText = quotedText
-          ? `${body || 'Please respond to the message I replied to.'}\n\n[Replied-to message]\n${quotedText}`
+          ? `[Current message]\n${body || 'Please respond to the message I replied to.'}\n\n[Quoted message for context only]\n${quotedText}`
           : body;
+      }
+
+      if (responseTargetJids.length) {
+        const targetName = String(senderName?.(responseTargetJids[0], jid) || '')
+          .replace(/[\r\n]+/g, ' ')
+          .trim()
+          .slice(0, 80);
+        const safeTargetName = targetName && !/^\+?[\d\s().-]+$/.test(targetName)
+          ? targetName
+          : 'the tagged group member';
+        const targetContext = `[Group reply target: ${safeTargetName}. Nick was explicitly called; address the tagged member, not the caller. Use light humor only if the exchange is clearly playful; otherwise respond seriously and respectfully.]`;
+        if (typeof userText === 'string') {
+          userText = `${targetContext}\n\n${userText}`;
+        } else if (Array.isArray(userText)) {
+          const textIndex = userText.findIndex((part) => part?.type === 'text');
+          if (textIndex >= 0) {
+            userText = userText.map((part, index) => index === textIndex
+              ? { ...part, text: `${targetContext}\n\n${part.text || ''}` }
+              : part);
+          } else {
+            userText = [{ type: 'text', text: targetContext }, ...userText];
+          }
+        }
       }
 
       // --- jailbreak protection: refuse/ignore prompt-injection & jailbreak attempts ---
@@ -2306,7 +2425,17 @@ User language preference: ${userLang}. Reply in that language when reasonable.`)
         return String(result || '').trim();
       });
       } catch (agentErr) {
-        logger.warn({ err: agentErr.message }, 'agent failed — recovering without ghosting');
+        let activeProvider = null;
+        try { activeProvider = getActiveProvider(); } catch {}
+        logger.error({
+          err: String(agentErr?.message || 'Unknown AI error')
+            .replace(/Bearer\s+\S+/gi, 'Bearer [REDACTED]')
+            .replace(/\bgsk_[A-Za-z0-9_-]+\b/g, '[REDACTED]'),
+          code: agentErr.code,
+          provider: activeProvider?.name,
+          model: activeProvider?.model,
+          status: agentErr.response?.status,
+        }, 'agent failed — recovering without ghosting');
         const isTimeout = agentErr.message && /timed out/i.test(agentErr.message);
         if (isTimeout) {
           // Smart timeout handling: if the task looks parallelizable, retry with sub-agents
@@ -2390,9 +2519,15 @@ User language preference: ${userLang}. Reply in that language when reasonable.`)
       // If the user spoke via a voice note / audio, reply with a voice note (UK female voice).
       const isAudioIn = curMediaType === 'audioMessage' || mt.ptvMessage;
       let sentMsg;
-      const preferVoice = isAudioIn && Math.random() < 0.55;
-      const callerTag = isGroup ? (numFromJid(resolvedSenderJid || senderJid || actorJid) || '') : '';
-      const taggedAnswer = (isGroup && callerTag) ? `@${callerTag}\n${answer}` : answer;
+      const preferVoice = isAudioIn && !responseTargetJids.length && Math.random() < 0.55;
+      const mentionTargetNumber = responseTargetJids.length
+        ? jidResolver.number(responseTargetJids[0], jidMap) || numFromJid(responseTargetJids[0])
+        : '';
+      if (mentionTargetNumber) answer = `@${mentionTargetNumber} ${answer}`;
+      const responseOptions = {
+        quoted: msg,
+        ...(responseTargetJids.length ? { mentions: responseTargetJids } : {}),
+      };
       if (preferVoice) {
         try {
           const speech = await tts.speak(answer, { voice: process.env.TTS_VOICE || 'en-US-JennyNeural' });
@@ -2406,10 +2541,10 @@ User language preference: ${userLang}. Reply in that language when reasonable.`)
           });
           try { if (speech.file) fs.unlink(speech.file, () => {}); } catch {}
         } catch (e) {
-          sentMsg = await sendText(jid, taggedAnswer, isGroup ? { mentions: [resolvedSenderJid || senderJid], quoted: msg } : { quoted: msg });
+          sentMsg = await sendText(jid, answer, responseOptions);
         }
       } else {
-        sentMsg = await sendText(jid, taggedAnswer, isGroup ? { mentions: [resolvedSenderJid || senderJid], quoted: msg } : { quoted: msg });
+        sentMsg = await sendText(jid, answer, responseOptions);
       }
       
       // Track sent message for auto-reply

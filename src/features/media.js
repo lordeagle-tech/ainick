@@ -1258,9 +1258,13 @@ runtime.define("stickers", "stickers.js", function(module, exports, require, __f
 const fs = require('fs');
 const path = require('path');
 const crypto = require('crypto');
+const os = require('os');
+const { execFile } = require('child_process');
+const { promisify } = require('util');
 const sharp = require('sharp');
 const { Collection } = require('../db');
 const logger = require('../logger');
+const execFileP = promisify(execFile);
 
 const STORAGE_DIR = path.join(__dirname, '..', '..', 'storage', 'stickers');
 if (!fs.existsSync(STORAGE_DIR)) fs.mkdirSync(STORAGE_DIR, { recursive: true });
@@ -1271,7 +1275,12 @@ const index = new Collection('sticker_index', { items: [] }); // { id, file, cha
 function saveSticker(buffer, { chatId, senderId } = {}) {
   const hash = crypto.createHash('sha1').update(buffer).digest('hex').slice(0, 16);
   const items = index.get('items', []);
-  if (items.some((s) => s.id === hash)) {
+  const existing = items.find((s) => s.id === hash);
+  if (existing) {
+    if (chatId && existing.chatId !== chatId && !existing.chatIds?.includes(chatId)) {
+      const chatIds = [...new Set([...(existing.chatIds || []), existing.chatId, chatId].filter(Boolean))];
+      index.set('items', items.map((s) => s.id === hash ? { ...s, chatIds } : s));
+    }
     return { ok: true, duplicate: true, id: hash };
   }
   const file = path.join(STORAGE_DIR, `${hash}.webp`);
@@ -1286,17 +1295,18 @@ function count() {
   return (index.get('items', []) || []).length;
 }
 
-/** Returns a random saved sticker's buffer, or null if none saved yet. */
-function getRandom() {
-  const items = index.get('items', []) || [];
+/** Returns a random saved sticker's buffer, optionally limited to one chat. */
+function getRandom(chatId = null) {
+  const allItems = index.get('items', []) || [];
+  const items = chatId ? allItems.filter((s) => s.chatId === chatId || s.chatIds?.includes(chatId)) : allItems;
   if (!items.length) return null;
   const pick = items[Math.floor(Math.random() * items.length)];
   try {
     return fs.readFileSync(pick.file);
   } catch (e) {
     logger.warn({ err: e.message, id: pick.id }, 'sticker file missing, dropping from index');
-    index.set('items', items.filter((s) => s.id !== pick.id));
-    return getRandom();
+    index.set('items', allItems.filter((s) => s.id !== pick.id));
+    return getRandom(chatId);
   }
 }
 
@@ -1315,6 +1325,50 @@ async function bufferToSticker(buffer) {
   } catch (e) {
     logger.warn({ err: e.message }, 'sticker conversion failed');
     return null;
+  }
+}
+
+async function videoBufferToSticker(buffer) {
+  const ffmpeg = process.env.FFMPEG_BIN || require('ffmpeg-static');
+  if (!Buffer.isBuffer(buffer) || !buffer.length) throw new Error('No video data was provided.');
+
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'nickai-sticker-'));
+  const inputPath = path.join(dir, 'input-video');
+  const outputPath = path.join(dir, 'sticker.webp');
+  try {
+    fs.writeFileSync(inputPath, buffer);
+    for (const profile of [
+      { fps: 15, quality: 65 },
+      { fps: 12, quality: 50 },
+      { fps: 10, quality: 35 },
+    ]) {
+      const filter = [
+        `fps=${profile.fps}`,
+        'scale=512:512:force_original_aspect_ratio=decrease:force_divisible_by=2',
+        'pad=512:512:(ow-iw)/2:(oh-ih)/2:color=black@0',
+        'format=yuva420p',
+      ].join(',');
+      await execFileP(ffmpeg, [
+        '-y', '-hide_banner', '-loglevel', 'error', '-i', inputPath,
+        '-an', '-vf', filter, '-c:v', 'libwebp_anim', '-loop', '0',
+        '-lossless', '0', '-q:v', String(profile.quality), '-compression_level', '6',
+        '-vsync', '0', outputPath,
+      ], { timeout: 60000, maxBuffer: 1024 * 1024 });
+
+      if (fs.statSync(outputPath).size <= 500 * 1024) {
+        return fs.readFileSync(outputPath);
+      }
+    }
+
+    const error = new Error("This video exceeds WhatsApp's 500 KB animated-sticker limit. Send a shorter or simpler clip; the video was not trimmed.");
+    error.code = 'STICKER_TOO_LARGE';
+    throw error;
+  } finally {
+    try {
+      fs.rmSync(dir, { recursive: true, force: true });
+    } catch (e) {
+      logger.warn({ err: e.message }, 'sticker temporary-file cleanup failed');
+    }
   }
 }
 
@@ -1365,7 +1419,7 @@ function clearMissing() {
   return { dropped, remaining: keep.length };
 }
 
-module.exports = { saveSticker, getRandom, count, bufferToSticker, listStickers, clearAll, clearMissing, STORAGE_DIR };
+module.exports = { saveSticker, getRandom, count, bufferToSticker, videoBufferToSticker, listStickers, clearAll, clearMissing, STORAGE_DIR };
 
 
 });

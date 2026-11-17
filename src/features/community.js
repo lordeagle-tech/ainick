@@ -151,6 +151,15 @@ function isBotMessageReplied(msg) {
   return false;
 }
 
+function isTrackedBotMessageReplied(msg) {
+  const contextInfo = contextOf(unwrap(msg?.message));
+  if (!contextInfo) return false;
+  for (const id of collectAllIds(contextInfo)) {
+    if (botMessageKeys.has(id)) return true;
+  }
+  return false;
+}
+
 function clearOldMessages() {
   if (botMessageKeys.size > 5000) {
     const arr = Array.from(botMessageKeys.keys());
@@ -160,7 +169,7 @@ function clearOldMessages() {
 
 setInterval(clearOldMessages, 3600000);
 
-module.exports = { addBotMessage, registerBotJids, isBotMessage, isBotMessageReplied, clearOldMessages };
+module.exports = { addBotMessage, registerBotJids, isBotMessage, isBotMessageReplied, isTrackedBotMessageReplied, clearOldMessages };
 
 });
 

@@ -8,20 +8,52 @@ const { execFile } = require('child_process');
 const { promisify } = require('util');
 const execFileP = promisify(execFile);
 
-/** Resolve a path safely within a workspace root. Prevents path traversal. */
+function isWithin(root, target) {
+  const rel = path.relative(root, target);
+  return rel === '' || (rel !== '..' && !rel.startsWith(`..${path.sep}`) && !path.isAbsolute(rel));
+}
+
+function canonicalWorkspace(workspace) {
+  const root = fs.realpathSync(path.resolve(workspace));
+  if (!fs.statSync(root).isDirectory()) throw new Error('Workspace root is not a directory.');
+  return root;
+}
+
+/** Resolve a path safely within a workspace root, including symlink targets. */
 function resolveSafe(filePath, workspace) {
-  const root = path.resolve(workspace);
+  const workspacePath = path.resolve(workspace);
+  const root = canonicalWorkspace(workspacePath);
   const raw = String(filePath || '.');
-  // Absolute paths are allowed only when they are already inside the selected
-  // workspace. Relative paths are resolved from that workspace. This keeps
-  // the tool safe while allowing the developer agent to pass real absolute
-  // project paths when it has explicitly selected the project workspace.
-  const resolved = path.resolve(root, raw);
-  const rel = path.relative(root, resolved);
-  if (rel === '..' || rel.startsWith(`..${path.sep}`) || path.isAbsolute(rel)) {
+  const requested = path.resolve(workspacePath, raw);
+  const resolved = isWithin(workspacePath, requested)
+    ? path.resolve(root, path.relative(workspacePath, requested))
+    : requested;
+  if (!isWithin(root, resolved)) {
     throw new Error(`Path escapes workspace root: ${raw}`);
   }
-  return resolved;
+
+  let existing = resolved;
+  while (true) {
+    try {
+      fs.lstatSync(existing);
+      break;
+    } catch (error) {
+      if (error.code !== 'ENOENT') throw error;
+      const parent = path.dirname(existing);
+      if (parent === existing) throw error;
+      existing = parent;
+    }
+  }
+
+  const realExisting = fs.realpathSync(existing);
+  if (!isWithin(root, realExisting)) {
+    throw new Error(`Path escapes workspace root: ${raw}`);
+  }
+  const target = path.resolve(realExisting, path.relative(existing, resolved));
+  if (!isWithin(root, target)) {
+    throw new Error(`Path escapes workspace root: ${raw}`);
+  }
+  return target;
 }
 
 /** List files and directories at a given path. */
@@ -33,17 +65,24 @@ async function listFiles(dirPath, workspace, opts = {}) {
     // Return file info
     return { ok: true, type: 'file', name: path.basename(target), size: stat.size, modified: stat.mtime.toISOString() };
   }
-  const limit = Math.min(Math.max(Number(opts.limit) || 50, 1), 200);
-  const entries = fs.readdirSync(target, { withFileTypes: true }).slice(0, limit);
+  const limit = Math.min(Math.max(Math.floor(Number(opts.limit) || 50), 1), 200);
+  const allEntries = fs.readdirSync(target, { withFileTypes: true })
+    .sort((a, b) => a.name.localeCompare(b.name));
+  const offset = Math.min(Math.max(Math.floor(Number(opts.offset) || 0), 0), allEntries.length);
+  const entries = allEntries.slice(offset, offset + limit);
+  const hasMore = offset + entries.length < allEntries.length;
   return {
     ok: true,
-    path: path.relative(workspace, target) || '.',
+    path: path.relative(canonicalWorkspace(workspace), target) || '.',
     entries: entries.map(e => ({
       name: e.name,
-      type: e.isDirectory() ? 'dir' : 'file',
+      type: e.isSymbolicLink() ? 'link' : e.isDirectory() ? 'dir' : 'file',
       size: e.isFile() ? fs.statSync(path.join(target, e.name)).size : null,
     })),
-    total: entries.length,
+    total: allEntries.length,
+    offset,
+    hasMore,
+    nextOffset: hasMore ? offset + entries.length : null,
   };
 }
 
@@ -65,16 +104,18 @@ function readFile(filePath, workspace, opts = {}) {
 
 /** Write content to a file. Creates parent directories if needed. */
 function writeFile(filePath, content, workspace) {
+  const root = canonicalWorkspace(workspace);
   const target = resolveSafe(filePath, workspace);
   const dir = path.dirname(target);
   if (!fs.existsSync(dir)) fs.mkdirSync(dir, { recursive: true });
   fs.writeFileSync(target, content);
   const stat = fs.statSync(target);
-  return { ok: true, name: path.basename(target), size: stat.size, path: path.relative(workspace, target) };
+  return { ok: true, name: path.basename(target), size: stat.size, path: path.relative(root, target) };
 }
 
 /** Search for files matching a pattern using find + grep. */
 async function searchFiles(query, workspace, opts = {}) {
+  const root = canonicalWorkspace(workspace);
   const dir = resolveSafe(opts.dir || '.', workspace);
   if (!fs.existsSync(dir)) return { ok: false, error: 'Search directory not found.' };
   const limit = Math.min(Math.max(Number(opts.limit) || 20, 1), 50);
@@ -89,7 +130,7 @@ async function searchFiles(query, workspace, opts = {}) {
       pattern,
       dir,
     ], { timeout: 15000, maxBuffer: 1024 * 1024 });
-    const files = stdout.trim().split('\n').filter(Boolean).slice(0, limit).map(f => path.relative(workspace, f));
+    const files = stdout.trim().split('\n').filter(Boolean).slice(0, limit).map(f => path.relative(root, f));
     return { ok: true, query, matches: files, total: files.length };
   } catch {
     // Fallback: search filenames with find
@@ -100,7 +141,7 @@ async function searchFiles(query, workspace, opts = {}) {
         '-not', '-path', '*/node_modules/*',
         '-type', 'f',
       ], { timeout: 10000, maxBuffer: 1024 * 1024 });
-      const files = stdout.trim().split('\n').filter(Boolean).slice(0, limit).map(f => path.relative(workspace, f));
+      const files = stdout.trim().split('\n').filter(Boolean).slice(0, limit).map(f => path.relative(root, f));
       return { ok: true, query, matches: files, total: files.length };
     } catch (e) {
       return { ok: false, error: 'Search failed: ' + e.message };

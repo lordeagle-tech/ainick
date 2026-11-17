@@ -185,7 +185,7 @@ const GENERAL_TOOLS = [
     type: 'function',
     function: {
       name: 'web_search',
-      description: 'Search the web for current information (news, facts, prices, etc).',
+      description: 'Search the web for current information, research, and sports updates or live scores. For time-sensitive answers, verify the page timestamp/status, cite source titles and URLs, and say when a score cannot be confirmed instead of guessing.',
       parameters: {
         type: 'object',
         properties: { query: { type: 'string' } },
@@ -203,7 +203,7 @@ const GENERAL_TOOLS = [
   {
     type: 'function', function: {
       name: 'search',
-      description: 'Search and browse the public internet for current information. This Node.js web-scraping tool searches Bing first, falls back to Brave/DuckDuckGo/Wikipedia, opens the best public pages, and returns readable page content for you to answer from.',
+      description: 'Search and browse the public internet for current information and research, including sports updates and live scores. This Node.js web-scraping tool searches Bing first, falls back to Brave/DuckDuckGo/Wikipedia, opens the best public pages, and returns readable page content. Verify timestamps/status, cite source titles and URLs, and never guess a score.',
       parameters: { type: 'object', properties: { command: { type: 'string', description: 'Web search query/command.' } }, required: ['command'] },
     },
   },
@@ -1198,7 +1198,7 @@ const GENERAL_TOOLS = [
     type: 'function',
     function: {
       name: 'web_search_news',
-      description: 'Web search focused on recent news (last 7-30 days). Returns {title, url, snippet, source, publishedAt}. Use when the user asks for current events or a news topic.',
+      description: 'Web search focused on recent news (last 7-30 days), including sports news and match reports. Returns result pages for summarizing with source links; use web_search for live score status and verify its timestamp.',
       parameters: {
         type: 'object',
         properties: {
@@ -2817,10 +2817,10 @@ const GENERAL_TOOLS = [
     },
   },
   // --- File ops ---
-  { type: 'function', function: { name: 'read_file', description: 'Read a file. Returns content.', parameters: { type: 'object', properties: { path: { type: 'string' }, startLine: { type: 'integer' }, limit: { type: 'integer' } }, required: ['path'] } } },
-  { type: 'function', function: { name: 'write_file', description: 'Write/overwrite a file. Creates dirs.', parameters: { type: 'object', properties: { path: { type: 'string' }, content: { type: 'string' } }, required: ['path', 'content'] } } },
-  { type: 'function', function: { name: 'list_files', description: 'List files and dirs.', parameters: { type: 'object', properties: { path: { type: 'string' }, limit: { type: 'integer' } } } } },
-  { type: 'function', function: { name: 'search_files', description: 'Search files by name/content.', parameters: { type: 'object', properties: { query: { type: 'string' }, dir: { type: 'string' }, limit: { type: 'integer' } }, required: ['query'] } } },
+  { type: 'function', function: { name: 'read_file', description: 'Read a file within the current project workspace. Use list_files to navigate folders first; absolute paths are accepted only when they remain inside this workspace.', parameters: { type: 'object', properties: { path: { type: 'string' }, startLine: { type: 'integer' }, limit: { type: 'integer' } }, required: ['path'] } } },
+  { type: 'function', function: { name: 'write_file', description: 'Create or edit a file within the current project workspace. Paths outside this workspace are rejected.', parameters: { type: 'object', properties: { path: { type: 'string' }, content: { type: 'string' } }, required: ['path', 'content'] } } },
+  { type: 'function', function: { name: 'list_files', description: 'Browse files and folders in the current project workspace. Start with path "." and use a returned folder path to navigate. Use offset with nextOffset to page through large folders.', parameters: { type: 'object', properties: { path: { type: 'string' }, limit: { type: 'integer' }, offset: { type: 'integer' } } } } },
+  { type: 'function', function: { name: 'search_files', description: 'Search file names and contents within the current project workspace.', parameters: { type: 'object', properties: { query: { type: 'string' }, dir: { type: 'string' }, limit: { type: 'integer' } }, required: ['query'] } } },
   // --- Git ops ---
   { type: 'function', function: { name: 'git_commit_push', description: 'Owner/sudo: stage all, commit, push.', parameters: { type: 'object', properties: { message: { type: 'string' }, branch: { type: 'string' } }, required: ['message'] } } },
   { type: 'function', function: { name: 'git_status', description: 'Check git status.', parameters: { type: 'object', properties: { cwd: { type: 'string' } } } } },
@@ -2848,7 +2848,7 @@ const GENERAL_TOOLS = [
   { type: 'function', function: { name: 'comment_on_post', description: 'Comment on a channel post by message ID.', parameters: { type: 'object', properties: { post_message_id: { type: 'string', description: 'Channel post message ID' }, text: { type: 'string', description: 'Comment text' }, jid: { type: 'string', description: 'Channel JID' } }, required: ['post_message_id', 'text'] } } },
   { type: 'function', function: { name: 'post_tech_update', description: 'Post a tech news/update to a channel (bot must be admin). Also fetches latest tech headlines automatically.', parameters: { type: 'object', properties: { title: { type: 'string', description: 'Post title' }, body: { type: 'string', description: 'Post content' }, jid: { type: 'string', description: 'Channel JID' }, auto: { type: 'boolean', description: 'Auto-fetch latest tech news' } }, required: ['title', 'body'] } } },
   { type: 'function', function: { name: 'scrape_url', description: 'Scrape a URL and extract title, description, and image.', parameters: { type: 'object', properties: { url: { type: 'string', description: 'URL to scrape' } }, required: ['url'] } } },
-  { type: 'function', function: { name: 'web_search', description: 'Search the web for results.', parameters: { type: 'object', properties: { query: { type: 'string', description: 'Search query' }, count: { type: 'integer', description: 'Number of results (default 5)' } }, required: ['query'] } } },
+  { type: 'function', function: { name: 'web_search', description: 'Search the web for current information, sports updates, or live scores. Verify current status/timestamps, cite source titles and URLs, and do not guess if the score is unconfirmed.', parameters: { type: 'object', properties: { query: { type: 'string', description: 'Search query' }, count: { type: 'integer', description: 'Number of results (default 5)' } }, required: ['query'] } } },
   // --- Todo tools ---
   { type: 'function', function: { name: 'agent_capabilities', description: 'List the real agent capabilities available right now (search, code, browser, github, shell, media, memory). Call this when the user asks what you can do.', parameters: { type: 'object', properties: {} } } },
   { type: 'function', function: { name: 'task_plan', description: 'Break a multi-step user goal into an ordered plan of concrete tool actions. Use before large builds/fixes/research so the user sees the path, then execute the steps with real tools.', parameters: { type: 'object', properties: { goal: { type: 'string', description: 'What the user wants done' }, constraints: { type: 'string', description: 'Optional limits (language, stack, deadline)' } }, required: ['goal'] } } },
@@ -3462,7 +3462,12 @@ async function toolWebSearch(args) {
   try {
     const results = await websearch2.browse(args.query, 5);
     if (!results.length) return { ok: true, results: [], note: 'No web results found. Do not invent an answer.' };
-    return { ok: true, query: args.query, results };
+    return {
+      ok: true,
+      query: args.query,
+      results,
+      instruction: 'Answer from retrieved pages. For live sports scores or updates, confirm the event and the source timestamp/status; cite source titles and URLs, and say if the information may be stale or unconfirmed.',
+    };
   } catch (e) { return { ok: false, error: 'Search failed: ' + e.message }; }
 }
 
@@ -6934,7 +6939,7 @@ async function toolWebAutomate(args, ctx) {
 
 async function toolUnlockViewOnce(args, ctx) {
   try {
-    const { downloadMediaMessage } = require('@lordeagle21/baileys');
+    const { downloadMediaMessage, downloadContentFromMessage } = require('@lordeagle21/baileys');
     const toDm = args?.toDm !== false; // default: prefer DM when user asked "send to dm"; tool arg controls
     const wantDm = !!(args?.toDm || args?.dm);
 
@@ -7001,38 +7006,98 @@ async function toolUnlockViewOnce(args, ctx) {
     }
 
     // Key MUST identify the original view-once message (stanzaId + participant)
-    const quotedKey = {
+    const quotedParticipant = ctxInfo.participant || ctxInfo.participantPn || ctx.quotedParticipant || undefined;
+    const quotedId = ctxInfo.stanzaId || ctx.quotedStanzaId || 'vo';
+    const mediaContent = img ? { imageMessage: img } : vid ? { videoMessage: vid } : { audioMessage: aud };
+    const mediaType = img ? 'image' : vid ? 'video' : 'audio';
+    const mediaNode = img || vid || aud;
+
+    const selfJids = [
+      ctx.sock?.user?.id, ctx.sock?.user?.lid,
+      ctx.sock?.authState?.creds?.me?.id, ctx.sock?.authState?.creds?.me?.lid,
+    ].filter(Boolean).map(String);
+    const sameId = (a, b) => String(a || '').replace(/:\d+@/, '@') === String(b || '').replace(/:\d+@/, '@');
+    // If the quoted view-once was sent by this same account (user testing from the
+    // bot phone), WhatsApp records it as `fromMe`.
+    const quotedFromMe = !!quotedParticipant && selfJids.some((id) => sameId(id, quotedParticipant));
+
+    const keyFor = (fromMe, withParticipant) => ({
       remoteJid: ctx.chatId,
-      id: ctxInfo.stanzaId || ctx.quotedStanzaId || img?.mediaKey?.toString?.() || 'vo',
-      fromMe: false,
-      participant: ctxInfo.participant || ctxInfo.participantPn || ctx.quotedParticipant || undefined,
-    };
+      id: quotedId,
+      fromMe,
+      ...(withParticipant && quotedParticipant ? { participant: quotedParticipant } : {}),
+    });
 
-    const mediaMsg = {
-      key: quotedKey,
-      message: img ? { imageMessage: img } : vid ? { videoMessage: vid } : { audioMessage: aud },
-    };
+    // Try primary direction first, then the opposite (self-sent vs received).
+    // A missing participant variant is only used for a plain download attempt.
+    const keyVariants = [];
+    for (const fromMe of (quotedFromMe ? [true, false] : [false, true])) {
+      if (quotedParticipant) keyVariants.push(keyFor(fromMe, true));
+      else keyVariants.push(keyFor(fromMe, false));
+    }
+    if (quotedParticipant) keyVariants.push(keyFor(quotedFromMe, false));
 
-    let buf;
-    try {
-      buf = await downloadMediaMessage(
-        mediaMsg,
-        'buffer',
-        {},
-        { logger: require('../logger'), reuploadRequest: ctx.sock.updateMediaMessage }
-      );
-    } catch (e1) {
-      // Retry without participant (some builds)
+    async function streamToBuffer(stream) {
+      const chunks = [];
+      for await (const chunk of stream) chunks.push(chunk);
+      return Buffer.concat(chunks);
+    }
+
+    function withTimeout(promise, ms) {
+      let timer;
+      const timeout = new Promise((_, reject) => {
+        timer = setTimeout(() => reject(new Error('media re-upload timed out')), ms);
+        if (timer.unref) timer.unref();
+      });
+      return Promise.race([promise, timeout]).finally(() => clearTimeout(timer));
+    }
+
+    async function tryDownload(key, message) {
+      // 1) Baileys normal path (uses url/directPath already on the payload).
       try {
-        buf = await downloadMediaMessage(
-          { key: { remoteJid: ctx.chatId, id: quotedKey.id, fromMe: false }, message: mediaMsg.message },
-          'buffer',
-          {},
-          { logger: require('../logger'), reuploadRequest: ctx.sock.updateMediaMessage }
-        );
-      } catch (e2) {
-        return { ok: false, error: `Download failed: ${e2.message}. View-once may already be expired.` };
+        const b = await downloadMediaMessage({ key, message }, 'buffer', {},
+          { logger: require('../logger') });
+        if (Buffer.isBuffer(b) && b.length > 10) return b;
+      } catch (e) { /* fall through */ }
+
+      // 2) Quoted view-once payloads often omit `url` while still having
+      //    mediaKey + directPath. Baileys' downloadMediaMessage rejects those with
+      //    `"imageMessage" message is not a media message`, so stream them directly.
+      if (mediaNode?.mediaKey && (mediaNode?.directPath || mediaNode?.url)) {
+        try {
+          const stream = await downloadContentFromMessage(mediaNode, mediaType);
+          const b = await streamToBuffer(stream);
+          if (Buffer.isBuffer(b) && b.length > 10) return b;
+        } catch (e) { /* fall through */ }
       }
+
+      // 3) Ask the sender's device to re-upload and supply a fresh url. This can
+      //    wait for the other device, so cap it and never hang the command.
+      if (quotedId !== 'vo' && typeof ctx.sock?.updateMediaMessage === 'function') {
+        try {
+          const updated = await withTimeout(ctx.sock.updateMediaMessage({ key, message }), 8000);
+          if (Buffer.isBuffer(updated) && updated.length > 10) return updated;
+          const b = await downloadMediaMessage(
+            { key, message: updated?.message || message }, 'buffer', {},
+            { logger: require('../logger') }
+          );
+          if (Buffer.isBuffer(b) && b.length > 10) return b;
+        } catch (e) { /* fall through */ }
+      }
+      return null;
+    }
+
+    let buf = null;
+    let lastErr = null;
+    for (const key of keyVariants) {
+      try {
+        buf = await tryDownload(key, mediaContent);
+      } catch (e) { lastErr = e; }
+      if (buf) break;
+    }
+    if (!buf) {
+      const why = lastErr?.message || 'the media is no longer available';
+      return { ok: false, error: `Could not download that view-once (${why}). It may be expired or already opened.` };
     }
 
     if (img) await sendMedia('image', buf);
@@ -7984,7 +8049,7 @@ function _ws(ctx) {
 }
 async function toolReadFile(args, ctx) { const f = args?.path; if (!f) return { ok: false, error: 'path required.' }; return fileOps.readFile(f, _ws(ctx), { maxBytes: args.limit, startLine: args.startLine }); }
 async function toolWriteFile(args, ctx) { const f = args?.path, c = args?.content; if (!f) return { ok: false, error: 'path required.' }; if (c == null) return { ok: false, error: 'content required.' }; return fileOps.writeFile(f, c, _ws(ctx)); }
-async function toolListFiles(args, ctx) { return fileOps.listFiles(args?.path || '.', _ws(ctx), { limit: args?.limit }); }
+async function toolListFiles(args, ctx) { return fileOps.listFiles(args?.path || '.', _ws(ctx), { limit: args?.limit, offset: args?.offset }); }
 async function toolSearchFiles(args, ctx) { if (!args?.query) return { ok: false, error: 'query required.' }; return fileOps.searchFiles(args.query, _ws(ctx), { dir: args?.dir, limit: args?.limit }); }
 async function toolGitCommitPush(args, ctx) { if (!(perms.isOwner(ctx?.senderJid) || perms.isSudo(ctx?.senderJid))) return { ok: false, error: 'Owner/sudo only.' }; return gitOps.gitCommitPush({ message: args?.message, cwd: args?.cwd || _ws(ctx), branch: args?.branch }); }
 async function toolGitStatus(args, ctx) { return gitOps.gitStatus(args?.cwd || _ws(ctx)); }

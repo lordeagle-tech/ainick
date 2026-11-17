@@ -5,7 +5,7 @@ const { getToolsFor, executeTool } = require('./tools');
 const { Collection } = require('../db');
 
 
-/** Drop / repair empty message content that causes OpenAI 400 "content cannot be empty". */
+/** Keep only provider-supported message fields and repair empty content before requests. */
 function sanitizeMessagesForApi(messages) {
   if (!Array.isArray(messages)) return [];
   const out = [];
@@ -13,14 +13,10 @@ function sanitizeMessagesForApi(messages) {
     if (!m || !m.role) continue;
     let content = m.content;
     if (content == null) {
-      if (m.tool_calls?.length) {
-        out.push(m);
-        continue;
-      }
-      content = m.role === 'system' ? '(system)' : '(empty)';
+      content = m.tool_calls?.length ? '' : (m.role === 'system' ? '(system)' : '(empty)');
     }
     if (typeof content === 'string') {
-      content = content.trim() || (m.role === 'tool' ? '{}' : '(empty)');
+      content = content.trim() || (m.tool_calls?.length ? '' : (m.role === 'tool' ? '{}' : '(empty)'));
     } else if (Array.isArray(content)) {
       const parts = content
         .map((b) => {
@@ -28,23 +24,54 @@ function sanitizeMessagesForApi(messages) {
           if (typeof b === 'string') return b.trim() ? { type: 'text', text: b } : null;
           if (b.type === 'text') {
             const tx = String(b.text || '').trim();
-            return tx ? { ...b, text: tx } : null;
+            return tx ? { type: 'text', text: tx } : null;
           }
-          // keep image/audio blocks
-          return b;
+          if (b.type === 'image_url' && b.image_url) {
+            const imageUrl = typeof b.image_url === 'string' ? { url: b.image_url } : b.image_url;
+            if (!imageUrl.url) return null;
+            return {
+              type: 'image_url',
+              image_url: {
+                url: imageUrl.url,
+                ...(imageUrl.detail ? { detail: imageUrl.detail } : {}),
+              },
+            };
+          }
+          if (b.type === 'input_audio' && b.input_audio) {
+            return {
+              type: 'input_audio',
+              input_audio: { data: b.input_audio.data, format: b.input_audio.format },
+            };
+          }
+          return null;
         })
         .filter(Boolean);
       if (!parts.length) {
         if (m.tool_calls?.length) {
-          out.push({ ...m, content: '' });
-          continue;
+          content = '';
+        } else {
+          content = '(empty)';
         }
-        content = '(empty)';
       } else {
         content = parts;
       }
     }
-    out.push({ ...m, content });
+    const safe = { role: m.role, content };
+    if (typeof m.name === 'string' && ['system', 'developer', 'user', 'assistant', 'tool'].includes(m.role)) safe.name = m.name;
+    if (m.role === 'assistant' && Array.isArray(m.tool_calls)) {
+      safe.tool_calls = m.tool_calls.map((call) => {
+        const fn = call?.function;
+        if (!fn?.name) return null;
+        const args = typeof fn.arguments === 'string' ? fn.arguments : JSON.stringify(fn.arguments ?? {});
+        return {
+          ...(typeof call.id === 'string' ? { id: call.id } : {}),
+          type: 'function',
+          function: { name: String(fn.name), arguments: args },
+        };
+      }).filter(Boolean);
+    }
+    if (m.role === 'tool' && typeof m.tool_call_id === 'string') safe.tool_call_id = m.tool_call_id;
+    out.push(safe);
   }
   // Ensure at least one user message
   if (!out.some((m) => m.role === 'user')) {
@@ -151,6 +178,104 @@ function emptyResponseError(providerName, model, detail) {
   e.code = 'EMPTY_RESPONSE';
   e.response = { status: 422, data: { error: { message: e.message, type: 'empty_response' } } };
   return e;
+}
+
+function userTextForRouting(value) {
+  if (Array.isArray(value)) {
+    return value.filter((part) => part?.type === 'text')
+      .map((part) => String(part.text || ''))
+      .join('\n')
+      .slice(0, 6000);
+  }
+  return String(value || '').replace(/data:[^;]+;base64,[A-Za-z0-9+/=]+/g, '[media]').slice(0, 6000);
+}
+
+const TOOL_INTENT_RE = /\b(?:create|build|make|generate|design|write|edit|modify|update|fix|repair|debug|implement|refactor|deploy|publish|host|run|execute|install|download|upload|convert|analyze|inspect|read|open|search|browse|research|look\s+up|fetch|summarize|translate|transcribe|play|send|share|resize|compress|extract|scan|review|test|commit|push|calculate|find|list|show|get|check|retrieve|set|clear|delete|remove|switch|join|invite|weather|forecast|temperature|news|sports?|scores?|fixtures?|standings?|stock|crypto|price|remind|schedule|poll|vote|define|latest|current|github|repository|repo|server|vps|terminal|shell|browser|login|click|scroll|navigate|automate|meme|joke|location|view[ -]?once|ip|dns|model\s+status|switch\s+model|provider\s+status|qr|json|regex|port|docker|email|inbox|birthday|note|todo|memory|persona|reminder|url|link|translation|meaning|dictionary|encrypt|decrypt|encode|decode|format|hash|sql|jwt|uuid|timestamp|webhook|pem|custom\s+tool|tagall|kick|promote|demote|mute|warn|afk|role|roles|task\s+list|to\s*do)\b/i;
+
+const TOOL_GROUPS = [
+  { pattern: /\b(?:website|web\s*app|landing\s*page|web\s*site|site)\b/i, names: ['build_website', 'preview_website', 'deploy_netlify', 'deploy_vercel', 'host_project', 'host_status', 'task_plan', 'run_subagents', 'build_project', 'project_plan', 'project_ideas', 'host_file', 'preview_zip_site'] },
+  { pattern: /\b(?:project|software|script|program|application|app)\b|(?<!qr\s)\bcode\b/i, names: ['build_project', 'project_plan', 'project_ideas', 'task_plan', 'run_subagents', 'write_file', 'read_file', 'list_files', 'search_files', 'code_review', 'project_scan', 'test_strategy', 'architecture_review', 'documentation_plan', 'next_project_tasks', 'send_file', 'workspace_zip'] },
+  { pattern: /\b(?:file|folder|directory|document|pdf|zip|archive|spreadsheet|presentation|report)\b/i, names: ['write_file', 'read_file', 'list_files', 'search_files', 'generate_document', 'send_file', 'send_any_file', 'host_file', 'file_send_from_url', 'analyze_zip', 'read_zip_file', 'list_zip_files', 'fix_zip', 'pack_media_zip', 'workspace_zip', 'zip_encrypt', 'zip_decrypt', 'task_plan'] },
+  { pattern: /\b(?:navigate|browse|explore|open)\b.{0,60}\b(?:project|workspace|files?|folders?|directories|repos?|repository|repositories)\b/i, names: ['read_file', 'list_files', 'search_files', 'write_file'] },
+  { pattern: /\b(?:github|git|repo|repository)\b/i, names: ['repo_work', 'repo_memory', 'github_connect', 'github_disconnect', 'github_connection_status', 'github_list_repos', 'github_get_repo', 'github_search_repos', 'github_read_file', 'github_upsert_file', 'github_create_repo', 'github_add_collaborator', 'github_create_issue', 'github_list_issues', 'git_status', 'git_commit_push', 'push_to_github', 'task_plan'] },
+  { pattern: /\b(?:browser|webpage|web\s+page|click|scroll|log\s*in|login|sign\s*up|automate|screen\s*record)\b|\b(?:navigate|browse)\b(?=[^.!?]{0,80}\b(?:https?:\/\/|www\.|website|webpage|web\s+page|browser|site|url)\b)/i, names: ['browser_navigate', 'browser_click', 'browser_scroll', 'browser_type', 'web_login', 'browser_login', 'browser_signup', 'web_automate', 'browser_screen_record', 'browser_screenshot', 'browser_diagnose', 'browser_extract', 'browser_execute_script', 'browser_cookies', 'browser_pdf'] },
+  { pattern: /\b(?:sports?|football|soccer|basketball|cricket|rugby|tennis|hockey|baseball|golf|formula\s*1|f1|nba|nfl|mlb|nhl|premier\s+league|champions\s+league)\b|\b(?:live|current|latest|today(?:'s)?)\s+(?:scores?|fixtures?|standings?|results?)\b|\b(?:scores?|fixtures?|standings?)\s+(?:for|in|today|now)\b/i, names: ['web_search', 'search', 'web_search_news'] },
+  { pattern: /\b(?:search|research|look\s+up|latest|current|news|headline|source|url|link|summarize)\b|\bbrowse\b(?![^.!?]{0,80}\b(?:project|files?|folders?|directories|workspace|repos?|repository|repositories)\b)/i, names: ['web_search', 'search', 'news', 'web_search_news', 'google_search_scraper', 'fetch_url', 'fetch_page_source', 'scrape_webpage', 'scrape_url', 'summarize_url', 'browser_navigate', 'browser_extract', 'youtube_search', 'youtube_scrape_search', 'pinterest_search'] },
+  { pattern: /\b(?:image|photo|picture|logo|illustration|sticker|screenshot|graphic|poster|card)\b/i, names: ['generate_image', 'image_generator', 'analyze_image', 'design_extract', 'resize_image', 'make_sticker', 'send_sticker', 'send_image', 'host_image_link', 'canvas_rank_card', 'canvas_quote_card', 'canvas_ship_card', 'canvas_leaderboard_card', 'canvas_monster_card', 'canvas_profile_card', 'canvas_battle_card'] },
+  { pattern: /\b(?:video|audio|voice\s*note|song|music|podcast|lyrics|mp3|telegram\s+media|pinterest\s+media)\b/i, names: ['generate_video', 'download_media', 'send_video_file', 'video_to_mp3', 'sticker_to_video', 'convert_audio', 'send_voice_note', 'play_song', 'search_music', 'get_lyrics', 'search_download_video', 'download_video_url', 'ytmp3', 'telegram_media', 'telegram_public_media', 'pinterest_media', 'spotify_search'] },
+  { pattern: /\b(?:server|vps|terminal|shell|command\s+line|logs?|health\s+check|install|npm|package|dependency|api\s+test|port|docker|mcp)\b/i, names: ['server_info', 'read_logs', 'mcp_status', 'mcp_reconnect', 'server_exec', 'vps_service', 'linux_shell', 'run_command', 'install_dependency', 'npm_search', 'npm_package', 'health_status', 'port_scan', 'dev_docker_compose', 'api_test', 'http_api', 'dev_http', 'dev_openapi_stub'] },
+  { pattern: /\b(?:security|vulnerabilit\w*|dependency\s+audit|security\s+audit|threat\s+model)\b/i, names: ['security_audit', 'dependency_audit', 'code_review', 'project_scan', 'test_strategy', 'architecture_review', 'port_scan'] },
+  { pattern: /\b(?:json|minify)\b/i, names: ['dev_json', 'json_format', 'json_minify'] },
+  { pattern: /\b(?:qr\s*code|qr)\b/i, names: ['generate_qr'] },
+  { pattern: /\b(?:base64|encode|decode)\b/i, names: ['dev_base64'] },
+  { pattern: /\bjwt\b/i, names: ['dev_jwt_decode'] },
+  { pattern: /\buuid\b/i, names: ['dev_uuid'] },
+  { pattern: /\b(?:regex|regular\s+expression)\b/i, names: ['dev_regex'] },
+  { pattern: /\b(?:timestamp|date\s*time)\b/i, names: ['dev_timestamp', 'check_date_time'] },
+  { pattern: /\b(?:dotenv|env\s+file|environment\s+file)\b/i, names: ['dev_dotenv_lint'] },
+  { pattern: /\bsql\b/i, names: ['dev_sql_format', 'database_design'] },
+  { pattern: /\b(?:pem|certificate)\b/i, names: ['dev_pem_inspect'] },
+  { pattern: /\bwebhook\b/i, names: ['dev_webhook_sign', 'http_api', 'dev_http'] },
+  { pattern: /\b(?:openapi|api\s+schema)\b/i, names: ['dev_openapi_stub', 'dev_http', 'api_test', 'http_api'] },
+  { pattern: /\b(?:url\s+parser|parse\s+url)\b/i, names: ['dev_url_parse', 'fetch_url'] },
+  { pattern: /\b(?:weather|forecast|temperature)\b/i, names: ['get_weather', 'weather'] },
+  { pattern: /\b(?:calculate|calculator|math|equation)\b/i, names: ['calculate', 'calculator'] },
+  { pattern: /\b(?:translate|translation)\b/i, names: ['translate_text'] },
+  { pattern: /\b(?:reminder|remind|schedule|timer|cron|proactive)\b/i, names: ['set_reminder', 'list_reminders', 'cancel_reminder', 'recurring_reminder', 'cron_add', 'cron_list', 'cron_remove', 'proactive_add', 'proactive_list', 'proactive_remove'] },
+  { pattern: /\b(?:poll|vote|voting)\b/i, names: ['send_poll', 'create_poll', 'vote_on_poll'] },
+  { pattern: /\b(?:stock|crypto|bitcoin|market|price)\b/i, names: ['stock_price', 'crypto_price'] },
+  { pattern: /\b(?:definition|define|meaning|dictionary)\b/i, names: ['define_word'] },
+  { pattern: /\b(?:group|member|members|tagall|kick|promote|demote|mute|warn|afk|role|roles|join\s+group)\b/i, names: ['group_members_list', 'manage_roles', 'list_roles', 'send_poll', 'create_poll', 'vote_on_poll', 'send_dm', 'join_group', 'set_afk', 'clear_afk', 'call_settings', 'delete_message', 'react_to_message'] },
+  { pattern: /\b(?:note|notes|remember|memory|todo|to\s+do|task\s+list)\b/i, names: ['note_save', 'note_list', 'note_delete', 'perm_memory_add', 'perm_memory_search', 'perm_memory_list', 'perm_memory_remove', 'todo_add', 'todo_list', 'todo_complete', 'todo_delete', 'todo_clear', 'next_project_tasks', 'task_plan'] },
+  { pattern: /\b(?:email|e\s*mail|inbox|temporary\s+mail|temp\s+mail)\b/i, names: ['temp_mail_create', 'temp_mail_inbox'] },
+  { pattern: /\b(?:meme|joke|funny|roast|random\s+fact|debate|birthday|persona|profile\s+card)\b/i, names: ['fetch_meme', 'fetch_funny_tweet', 'fetch_debate_topic', 'fetch_tiktok_comedy', 'fetch_comedy', 'random_fact', 'roast', 'ship', 'birthday_set', 'birthday_get', 'birthday_remove', 'persona_list', 'persona_set', 'style_text', 'canvas_profile_card'] },
+  { pattern: /\b(?:view[ -]?once|viewonce)\b/i, names: ['unlock_view_once'] },
+  { pattern: /\b(?:ip\s+address|dns|domain|whois|network\s+lookup|scan\s+ports)\b/i, names: ['ip_lookup', 'dns_lookup', 'port_scan'] },
+  { pattern: /\b(?:location|map|directions|share\s+location)\b/i, names: ['send_location'] },
+  { pattern: /\b(?:model\s+status|switch\s+model|ai\s+provider|provider\s+status|capabilities)\b/i, names: ['model_status', 'switch_model', 'agent_capabilities', 'api_test'] },
+  { pattern: /\b(?:custom\s+tool|create\s+tool|list\s+tools|delete\s+tool)\b/i, names: ['create_tool', 'execute_custom_tool', 'list_custom_tools', 'delete_custom_tool', 'list_runtime_tools'] },
+];
+
+const TOOL_QUERY_STOP = new Set(['please', 'could', 'would', 'can', 'you', 'me', 'my', 'the', 'a', 'an', 'to', 'for', 'with', 'on', 'at', 'as', 'and', 'or', 'but', 'it', 'this', 'that', 'what', 'how', 'i', 'we', 'help', 'need', 'want', 'create', 'build', 'make', 'generate', 'design', 'write', 'edit', 'modify', 'update', 'fix', 'repair', 'debug', 'implement', 'refactor', 'deploy', 'publish', 'host', 'run', 'execute', 'install', 'download', 'upload', 'convert', 'analyze', 'inspect', 'read', 'open', 'search', 'browse', 'research', 'fetch', 'summarize', 'translate', 'transcribe', 'play', 'send', 'share', 'resize', 'compress', 'extract', 'scan', 'review', 'test', 'commit', 'push', 'calculate', 'join', 'login', 'click', 'scroll', 'navigate', 'automate', 'find', 'list', 'show', 'get', 'check', 'retrieve', 'set', 'clear', 'delete', 'remove', 'switch', 'invite']);
+
+function selectToolsForRequest(allTools, requestText) {
+  const text = String(requestText || '').toLowerCase();
+  if (!TOOL_INTENT_RE.test(text)) return [];
+
+  const wanted = new Set();
+  for (const group of TOOL_GROUPS) {
+    if (group.pattern.test(text)) group.names.forEach((name) => wanted.add(name));
+  }
+  const normalizedText = text.replace(/[\s-]+/g, '_');
+  for (const tool of allTools || []) {
+    const name = String(tool?.function?.name || '').toLowerCase();
+    if (name && (normalizedText.includes(name) || text.includes(name.replace(/_/g, ' ')))) wanted.add(name);
+  }
+
+  if (!wanted.size) {
+    const queryTokens = new Set((text.match(/[a-z0-9]{2,}/g) || []).filter((token) => !TOOL_QUERY_STOP.has(token)));
+    const ranked = (allTools || []).map((tool) => {
+      const name = String(tool?.function?.name || '').toLowerCase();
+      const parts = name.split(/[^a-z0-9]+/).filter(Boolean);
+      const score = parts.reduce((total, part) => total + (queryTokens.has(part) ? (part.length > 3 ? 2 : 1) : 0), 0);
+      return { name, score };
+    }).filter((item) => item.name && item.score > 0).sort((a, b) => b.score - a.score).slice(0, 8);
+    ranked.forEach((item) => wanted.add(item.name));
+  }
+
+  const selected = [];
+  const seen = new Set();
+  let schemaChars = 0;
+  for (const tool of allTools || []) {
+    const name = String(tool?.function?.name || '').toLowerCase();
+    if (!wanted.has(name) || seen.has(name)) continue;
+    const size = JSON.stringify(tool).length;
+    if (selected.length >= 18 || schemaChars + size > 18000) continue;
+    selected.push(tool);
+    seen.add(name);
+    schemaChars += size;
+  }
+  return selected;
 }
 
 // Agnes Video's result-polling endpoint lives at the API root (…/agnesapi), not under
@@ -644,7 +769,7 @@ class AIClient {
       } else if (status === 400 && tools && tools.length) {
         logger.warn({ provider: provider.name, model, detail }, '400 with tools — retrying without tools');
         try {
-          ({ data } = await http.post('/chat/completions', { model, messages }, { signal }));
+          ({ data } = await http.post('/chat/completions', { model, messages: safeMessages }, { signal }));
         } catch (err2) {
           const d2 = err2.response?.data;
           const detail2 =
@@ -995,7 +1120,15 @@ class AIClient {
    * @returns {Promise<string>} final assistant text
    */
   async runAgent({ system, history, userText, toolCtx }) {
-    const tools = getToolsFor(toolCtx.isGroup);
+    const currentText = userTextForRouting(userText);
+    const isShortFollowUp = /^(?:yes|yeah|yep|sure|go ahead|do it|continue|proceed|please do|make it|build it|create it|send it)(?:[.!?,\s]|$)/i.test(currentText.trim());
+    const previousUserText = isShortFollowUp && Array.isArray(history)
+      ? userTextForRouting([...history].reverse().find((turn) => turn?.role === 'user')?.content)
+      : '';
+    const attachmentName = toolCtx?.attachmentInfo?.fileName || toolCtx?.attachmentName || '';
+    const toolRequestText = `${previousUserText} ${currentText} ${attachmentName}`.trim();
+    const tools = selectToolsForRequest(getToolsFor(toolCtx.isGroup), toolRequestText);
+    const userBlob = currentText;
     // give tools access to this client for things like build_website / generate_image
     toolCtx.aiClient = this;
 
@@ -1089,8 +1222,7 @@ class AIClient {
     let lastToolFailure = null;
 
     // Auto-plan nudge for heavy goals (model still decides tools; this biases toward task_plan first).
-    const userBlob = typeof userText === 'string' ? userText : JSON.stringify(userText || '');
-    if (/\b(build|create|make|fix|repair|debug|implement|refactor|deploy|scaffold|website|project|zip)\b/i.test(userBlob)
+    if (tools.some((tool) => tool.function?.name === 'task_plan') && /\b(build|create|make|fix|repair|debug|implement|refactor|deploy|scaffold|website|project|zip)\b/i.test(userBlob)
         && !/\btask_plan\b/i.test(userBlob)) {
       messages.push({
         role: 'system',
@@ -1108,7 +1240,7 @@ class AIClient {
       } catch (compErr) {
         // If tools schema blows up a free model, retry once with no tools so chat still works.
         const em = String(compErr?.message || '');
-        if (tools && tools.length && /400|tool|schema|function/i.test(em)) {
+        if (tools && tools.length && /400|413|tool|schema|function|too large|token limit|TPM|ITPM/i.test(em)) {
           logger.warn({ err: em.slice(0, 200) }, 'completion with tools failed — retrying without tools');
           try {
             msg = await this._completion(messages, []);

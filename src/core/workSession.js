@@ -94,7 +94,7 @@ ${s.lastTool ? `Last tool: ${s.lastTool}` : ''}
 ${s.note ? `Note: ${s.note}` : ''}
 Recent steps:
 ${steps || '- (none logged yet)'}
-RULES: Do NOT pretend you never started this. Do NOT ask "what do you want to build?" if the goal is already set. Continue or report progress honestly. If status is done, only re-open if the user asks for changes.]`;
+RULES: Treat this session as background context, not the current request by default. Continue it only when the latest message clearly refers to this goal. If the user asks for something different, switch to that request immediately and do not steer back here. If the user returns to this goal, continue honestly without asking what they want to build again. If status is done, only re-open if the user asks for changes.]`;
 }
 
 /** Heuristic: detect a new multi-step job from user text and seed the session. */

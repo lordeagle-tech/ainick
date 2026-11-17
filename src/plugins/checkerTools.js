@@ -235,9 +235,6 @@ async function route(ctx, input) {
   const parsed = commandPrefix.parseCommand(input);
   const text = parsed.text.trim();
   if (!isCommand(input)) return { handled: false };
-  if (commandPrefix.needsPrefix(parsed)) {
-    return commandError(`This command needs the configured prefix. Try: \`${parsed.prefix}${text}\``);
-  }
   if (/^checker$/i.test(text)) return commandError(helpText());
 
   const subdomainMatch = text.match(/^(?:subdomain|subdomainfinder|findsubs)(?:\s+([\s\S]+))?$/i);
@@ -263,9 +260,6 @@ async function handleMedia(ctx, input, imageBuffer) {
   if (!isNsfwCommand(input)) return { handled: false };
   const parsed = commandPrefix.parseCommand(input);
   const text = parsed.text.trim();
-  if (commandPrefix.needsPrefix(parsed)) {
-    return commandError(`This command needs the configured prefix. Try: \`${parsed.prefix}${text}\``);
-  }
   const commandText = text.replace(/^nsfw-?check\s*/i, '').trim();
   return checkNsfw(commandText, ctx, imageBuffer);
 }

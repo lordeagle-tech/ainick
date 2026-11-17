@@ -191,10 +191,10 @@ const config = {
         label: 'Groq (fast inference)',
         baseUrl: (process.env.GROQ_BASE_URL || 'https://api.groq.com/openai/v1').replace(/\/$/, ''),
         apiKeys: String(process.env.GROQ_API_KEY || '').split(',').map(k => k.trim()).filter(Boolean),
-        model: process.env.GROQ_MODEL || 'llama-3.3-70b-versatile',
+        model: process.env.GROQ_MODEL || 'qwen/qwen3.8-27b',
         visionModel: process.env.GROQ_VISION_MODEL || 'qwen/qwen3.8-27b',
-        // Keep fallback configurable; default to primary model to avoid 404s from deprecated fallback IDs.
-        fallbackModel: process.env.GROQ_FALLBACK_MODEL || process.env.GROQ_MODEL || 'llama-3.3-70b-versatile',
+        // Keep fallback configurable; use a verified, account-available backup by default.
+        fallbackModel: process.env.GROQ_FALLBACK_MODEL || 'openai/gpt-oss-20b',
         style: 'openai',
       },
       // Google Gemini — OpenAI-compatible endpoint. Set GEMINI_API_KEY or GOOGLE_API_KEY.
