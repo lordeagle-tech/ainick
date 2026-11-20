@@ -7,6 +7,24 @@ const perms = require('../utils/permissions');
 const lastBuild = require('./lastBuild');
 const githubTokenVault = require('../features').githubTokenVault;
 const workSession = require('./workSession');
+const { evaluateCallGate } = require('./callGate');
+const { getRememberedMessage, getRememberedMessages } = require('../whatsapp/connection');
+
+/** Unwrap view-once envelopes and confirm the media still has a usable key/path. */
+function usableVoMedia(msg) {
+  try {
+    let node = msg?.message;
+    for (let i = 0; i < 8 && node; i++) {
+      if (node.viewOnceMessageV2?.message) { node = node.viewOnceMessageV2.message; continue; }
+      if (node.viewOnceMessage?.message) { node = node.viewOnceMessage.message; continue; }
+      if (node.viewOnceMessageV2Extension?.message) { node = node.viewOnceMessageV2Extension.message; continue; }
+      if (node.ephemeralMessage?.message) { node = node.ephemeralMessage.message; continue; }
+      break;
+    }
+    const m = node?.imageMessage || node?.videoMessage || node?.audioMessage;
+    return m?.mediaKey && (m.directPath || m.url) ? true : false;
+  } catch { return false; }
+}
 
 async function sendOwnerProgress(sock, text, fallbackJid, isGroup, senderJid) {
   const body = String(text || '').slice(0, 1200);
@@ -27,7 +45,7 @@ async function sendOwnerProgress(sock, text, fallbackJid, isGroup, senderJid) {
 }
 const { economy, stickers, afk, autoreply, daemons, autoPresence, darkAgent, roles, funFeed, usageTracker, partyExtras, spamScore, scheduledBroadcast, stickerPack, telegramStickers, funExtras, siteRunner, dailyReport, genQuota, zipMemory, ownerCleanup, selfheal, deletehandler, leveling, customCommands, obsidian, commandPlugins, names, fixer, tts, messageTracker, training, subagents } = require('./registry');
 const { Collection, flushAllSync } = require('../db');
-const { numFromJid, isGroupJid, fmtCurrency, isGroupStatusMentionMessage, isGroupStatusPost, looksLikeStatusPromo, phonesFromMessageType, timeAgo } = require('../utils/helpers');
+const { numFromJid, toArray, isGroupJid, fmtCurrency, isGroupStatusMentionMessage, isGroupStatusPost, looksLikeStatusPromo, phonesFromMessageType, timeAgo } = require('../utils/helpers');
 const jidResolver = require('../utils/jidResolver');
 const { getActiveProvider, setActiveProvider, listProviders } = require('../ai/client');
 const memory = require('./memory');
@@ -136,9 +154,10 @@ function logGroupMessage(groupId, sender, text) {
   groupChatLog.set(groupId, list);
 }
 
-// Limit automatic sticker replies per sender and chat to avoid spam.
+// Limit automatic sticker replies to a short gap so a sticker battle can keep going.
+// A long cooldown here made Nick answer once and then go silent for hours.
 const stickerCooldown = new Map();
-const STICKER_COOLDOWN_MS = 3 * 60 * 60 * 1000;
+const STICKER_COOLDOWN_MS = Math.max(250, Number(config.stickers?.battleCooldownMs ?? 1500));
 
 async function cachedGroupMeta(sock, jid) {
   const hit = groupMetaCache.get(jid);
@@ -181,7 +200,7 @@ function statusCommandCard(command, startedAt) {
 const CORE_NORMAL_MENU_SECTIONS = [
   { title: 'Menu & Status', commands: ['menu', 'help', 'commands', 'normal menu', 'up', 'alive', 'ping', 'ping2', 'uptime', 'test'] },
   { title: 'Games', commands: ['games', 'game list', 'game leaderboard', 'stop game', 'wordgrid', 'trivia', 'scramble', 'guess', 'riddle', 'hangman', 'crossword', 'spelling bee', 'wyr', 'emoji game', 'quiz', 'ttt', 'blackjack', 'coinflip', 'slot'] },
-  { title: 'Utilities', commands: ['usage', 'ctx', 'compact', 'callad', 'donate', 'support', 'setprefix'] },
+  { title: 'Utilities', commands: ['usage', 'ctx', 'compact', 'forget me', 'reset memory', 'help more', 'check link', 'digest now', 'vibe', 'quote', 'callad', 'donate', 'support', 'setprefix'] },
 ];
 const EXACT_CORE_COMMANDS = new Set(CORE_NORMAL_MENU_SECTIONS[0].commands);
 
@@ -217,7 +236,7 @@ function buildMenuText(isOwner = false) {
   }).format(now));
   const greetEmoji = nairobiHour < 12 ? '☀️' : nairobiHour < 18 ? '🌤️' : '🌙';
   const ownerSection = isOwner
-    ? `\n\n╭─〘 *𝐎𝐖𝐍𝐄𝐑 𝐂𝐎𝐍𝐓𝐑𝐎𝐋𝐒* 〙\n│ ❐➻ \`${commandPlugins.getPrefix()}owner menu\` — full owner command list\n│ ❐➻ \`${commandPlugins.getPrefix()}owner status\` — check bot status\n│ ❐➻ \`${commandPlugins.getPrefix()}model\` — view or switch the AI provider\n│ ❐➻ \`${commandPlugins.getPrefix()}private\` / \`${commandPlugins.getPrefix()}public\` — change access mode\n╰──────────⊷`
+    ? `\n\n╭─〘 *𝐎𝐖𝐍𝐄𝐑 𝐂𝐎𝐍𝐓𝐑𝐎𝐋𝐒* 〙\n│ ❐➻ \`${commandPlugins.getPrefix()}owner menu\` — full owner command list\n│ ❐➻ \`${commandPlugins.getPrefix()}owner status\` — check bot status\n│ ❐➻ \`${commandPlugins.getPrefix()}model\` — view or switch the AI provider\n│ ❐➻ \`${commandPlugins.getPrefix()}private\` / \`${commandPlugins.getPrefix()}public\` — change access mode\n│ ❐➻ \`${commandPlugins.getPrefix()}clear memory here\` — wipe this chat's captured memory\n│ ❐➻ \`${commandPlugins.getPrefix()}clear memory all\` — wipe all captured memory\n│ ❐➻ \`${commandPlugins.getPrefix()}autostatus view on/off\` — auto-view statuses\n│ ❐➻ \`${commandPlugins.getPrefix()}autotyping on/off\` — auto typing indicator\n│ ❐➻ \`${commandPlugins.getPrefix()}test call <message>\` — dry-run the call gate\n│ ❐➻ \`${commandPlugins.getPrefix()}memory backup\` / \`memory restore <id>\`\n╰──────────⊷`
     : '';
   return `╭─〘 *𝐍𝐈𝐂𝐊 𝐀𝐈* 〙
 ┃❍ ʙᴏᴛ ɴᴀᴍᴇ 「 *𝗡𝗜𝗖𝗞 𝗔𝗜* 」
@@ -318,6 +337,14 @@ function makeRouter({ sock, aiClient, senderName }) {
   // response. The quoted-message key is kept by autoreply for reliable reply detection.
   async function sendText(jid, text, opts = {}) {
     const sent = await rawSendText(jid, text, opts);
+    if (sent?.key) autoreply.addBotMessage(sent.key);
+    return sent;
+  }
+
+  // Stickers need the same tracking as text so a reply to Nick's sticker is
+  // recognised as a call and the battle can continue.
+  async function sendBotSticker(jid, buffer, opts = {}) {
+    const sent = await sendSticker(jid, buffer, opts);
     if (sent?.key) autoreply.addBotMessage(sent.key);
     return sent;
   }
@@ -584,69 +611,57 @@ async function handleIncoming(msg) {
       return;
     }
 
-    const rawText = (mt.conversation || mt.extendedTextMessage?.text || mt.imageMessage?.caption || mt.videoMessage?.caption || '').trim();
-    const mentions =
-      mt.extendedTextMessage?.contextInfo?.mentionedJid ||
-      mt.imageMessage?.contextInfo?.mentionedJid ||
-      mt.videoMessage?.contextInfo?.mentionedJid ||
-      [];
     const botNameList = (config.behavior && config.behavior.botNames) || ['broken'];
+    // Re-resolved after group metadata at line ~1179, so this must stay mutable.
     let selfNums = jidResolver.selfIds(sock, preJidMap);
-    const mentionedBot = (Array.isArray(mentions) ? mentions : [])
-      .some((m) => jidResolver.isSelfJid(m, sock));
-    const taggedOtherUser = (Array.isArray(mentions) ? mentions : []).some((mentioned) => {
-      if (jidResolver.isSelfJid(mentioned, sock)) return false;
-      const resolved = jidResolver.resolve(mentioned, preJidMap);
-      return !jidResolver.matchesAny(resolved, [
-        senderJid,
-        actorJid,
-        msg.key?.participantAlt,
-        msg.key?.participantPn,
-      ].filter(Boolean));
+    const gate = evaluateCallGate({
+      mt,
+      msg,
+      isGroup,
+      senderJid,
+      actorJid,
+      sock,
+      preJidMap,
+      senderIsElevated,
+      botNameList,
+      selfNums,
+      jidResolver,
+      commandPlugins,
+      autoreply,
+      config,
+      stripBotAddress,
+      botNameWordPattern,
+      isCoreMenuCommand,
+      numFromJid,
     });
-    const groupMentionCall = isGroup && mentionedBot && taggedOtherUser;
-    const repliedToBot = (() => {
-      try {
-        return isGroup
-          ? autoreply.isTrackedBotMessageReplied(msg)
-          : autoreply.isBotMessageReplied(msg);
-      } catch { return false; }
-    })();
-    const callText = rawText.normalize('NFKC').replace(/[\u200B-\u200D\uFEFF]/g, '').trim();
-    // Match Nick as a standalone name anywhere, but do not treat an @mention as a call.
-    const namedBot = !!callText
-      && botNameList.some((name) => name && botNameWordPattern(name).test(callText));
-    const cleanText = stripBotAddress(callText, botNameList);
-    const parsedCoreText = commandPlugins.parseCommand(cleanText).text;
-    const builtInCommand = isCoreMenuCommand(parsedCoreText)
-      || /^(?:help|menu|commands|normal menu|(?:\/|!)?(?:up|ping|ping2|uptime|alive|test))$/i.test(cleanText);
-    const viewOnceCommand = /^(?:[.!/])?(?:viewonce|view\s*once|reveal|open\s*once|vv)\b/i.test(cleanText || callText || rawText || '');
-    // In groups, a mention of this account can be an ordinary tag of its human owner.
-    // Require an explicit target too before treating a group mention as a Nick call.
-    const mentionCall = mentionedBot && (!isGroup || groupMentionCall);
-    let isAddressed = mentionCall || (repliedToBot && (isGroup || !!mt.stickerMessage)) || namedBot
-      || commandPlugins.parseCommand(cleanText).hadPrefix
-      || builtInCommand
-      || viewOnceCommand
-      || commandPlugins.isExplicitCommand(cleanText);
-    let isBareCall = !cleanText && (namedBot || mentionCall);
+    const {
+      rawText, mentions, mentionedBot, massTagBroadcast, groupMentionCall,
+      repliedToBot, callText, namedBot, cleanText, replyContextInfo,
+      quotedPayload, quotedInvestigateCall, viewOnceCommand, mentionCall,
+      explicitCall, isAddressed, isBareCall, knownBot, botSignature,
+      levelNoticeTagsSelf,
+    } = gate;
+
+    // Mass-tag announcements from ordinary members are not calls, even if Nick's
+    // LID is in the recipient list. Drop them before any AI/tool path sees them.
+    if (massTagBroadcast) return;
+
+    // Other bots' messages often tag Nick plus another member, which would otherwise
+    // pass the group mention gate and look like a genuine call. Drop known bot accounts
+    // and obvious AI-bot signatures before any call/addressing logic runs.
+    const botDisplayName = /\b(?:ai|bot|assistant)\b/i.test(String(msg.pushName || ''));
+    if (knownBot || (botSignature && (botDisplayName || mentionedBot))) {
+      logger.debug({ jid, sender: String(senderJid).slice(0, 24) }, 'skip other bot message');
+      return;
+    }
 
     // Automated level/XP notifications posted by other bots often tag this account,
     // e.g. "🎉 @195593515315386 reached level 1!". Replying to them creates a
     // notification loop (reply → XP → another announcement), so treat them as
     // system noise instead of a call.
-    if (isGroup && rawText && rawText.length < 240) {
-      const levelNotice = /(?:reached|hit|is\s+now\s+at)\s+level\s+\d+|level(?:led|ed)?\s*up|gained\s+\d+\s*(?:xp|points)|\+\s*\d+\s*(?:xp|points)/i.test(rawText);
-      if (levelNotice && !rawText.includes('?')) {
-        const selfDigits = [...selfNums]
-          .map((id) => String(id).split('@')[0].split(':')[0])
-          .filter((n) => n && n.length >= 8);
-        const tagsSelf = mentionedBot || selfDigits.some((n) => rawText.includes(n));
-        if (tagsSelf) {
-          logger.debug({ jid, text: rawText.slice(0, 100) }, 'skip automated level/XP notification');
-          return;
-        }
-      }
+    if (levelNoticeTagsSelf) {
+      logger.debug({ jid, text: rawText.slice(0, 100) }, 'skip automated level/XP notification');
+      return;
     }
 
     // Anti-view-once inspects only message-envelope keys; it never opens, downloads,
@@ -760,12 +775,13 @@ async function handleIncoming(msg) {
         const cooldownKey = `${jid}:${senderJid}`;
         const lastStickerReply = stickerCooldown.get(cooldownKey) || 0;
         const cooldownReady = now - lastStickerReply >= STICKER_COOLDOWN_MS;
-        const shouldReact = isReplyToBot && cooldownReady;
+        const stickerBattleOn = commandPlugins.isStickerBattleEnabled?.(jid) !== false;
+        const shouldReact = isReplyToBot && cooldownReady && stickerBattleOn;
 
         if (shouldReact) {
           stickerCooldown.set(cooldownKey, now);
           const back = stickers.getRandom(jid);
-          const sent = back ? await sendSticker(jid, back, { quoted: msg }) : false;
+          const sent = back ? await sendBotSticker(jid, back, { quoted: msg }) : false;
           if (!sent) {
             await sendText(jid, reply[Math.floor(Math.random() * reply.length)], { quoted: msg });
           }
@@ -788,7 +804,7 @@ async function handleIncoming(msg) {
     if (!rawText && !isGroupStatusMention && !hasMedia && !contactPhones.length) return;
 
     // contextInfo is used by the viewonce reveal (below) AND the zip-fix section later
-    const ctxInfoDoc = mt.extendedTextMessage?.contextInfo;
+    const ctxInfoDoc = replyContextInfo;
 
     // Preserve the actual message being replied to. A tagged reply often contains only
     // the user's short instruction; the quoted text is the missing context the AI needs.
@@ -808,7 +824,7 @@ async function handleIncoming(msg) {
     }
     const quotedMessage = ctxInfoDoc?.quotedMessage || null;
     const quotedUnwrapped = unwrapQuoted(quotedMessage);
-    const quotedText = extractTextFromMessage(quotedMessage);
+    let quotedText = extractTextFromMessage(quotedMessage);
     const quotedContext =
       ctxInfoDoc ||
       quotedMessage?.extendedTextMessage?.contextInfo ||
@@ -843,6 +859,18 @@ async function handleIncoming(msg) {
         // flow, so build the identity from the message-level map we already have.
         const voIdentity = jidResolver.resolveIdentity(senderJid, preJidMap, null);
         const voResolvedSender = voIdentity.jid || actorJid || senderJid;
+        // Quoted view-once payloads are redacted (no url/mediaKey). The original
+        // message is still in Baileys' in-memory store if Nick saw it arrive.
+        const voQuotedId = ctxInfoDoc?.stanzaId || quotedContext?.stanzaId || quotedMessageId;
+        const exactVoMessage = getRememberedMessage(voQuotedId);
+        // WhatsApp may quote a view-once under a different stanzaId than the stored
+        // original, so also scan recent messages in this chat for a usable copy.
+        const chatMessages = getRememberedMessages(jid);
+        const recentVo = chatMessages.filter(usableVoMedia);
+        const originalVoCandidates = [];
+        if (exactVoMessage && !originalVoCandidates.includes(exactVoMessage)) originalVoCandidates.push(exactVoMessage);
+        for (const m of recentVo) if (!originalVoCandidates.includes(m)) originalVoCandidates.push(m);
+        const originalVoMessage = originalVoCandidates[0] || exactVoMessage || null;
         const voCtx = {
           sock,
           chatId: jid,
@@ -851,8 +879,16 @@ async function handleIncoming(msg) {
           senderIdentity: voIdentity,
           quotedContext,
           quotedMessage,
-          quotedStanzaId: ctxInfoDoc?.stanzaId || quotedContext?.stanzaId || null,
+          quotedStanzaId: voQuotedId,
           quotedParticipant: quotedContext?.participant || quotedContext?.participantPn || null,
+          originalVoMessage,
+          originalVoCandidates,
+          voDebug: {
+            id: voQuotedId || '-',
+            exact: exactVoMessage ? (usableVoMedia(exactVoMessage) ? 'usable' : 'redacted') : 'miss',
+            stored: chatMessages.length,
+            usable: recentVo.length,
+          },
           replyMessage: msg,
           sendText: (t) => sendText(jid, t),
         };
@@ -1264,11 +1300,48 @@ if (/^(self[- ]?fix|fix yourself|health check)$/i.test(rawText) && perms.isOwner
     const memoryUserId = (senderIdentity.phoneNumber || jidResolver.number(senderJid, jidMap) || numFromJid(resolvedSenderJid || senderJid) || resolvedSenderJid || senderJid);
     const memoryScope = `${jid}::${memoryUserId}`;
 
-    // Soft anti-spam: high score messages from non-staff are dropped quietly
+    // --- memory wipe commands (captured conversations) ---
+    // Owner: wipe everything or just this chat. Any user: forget their own data.
+    {
+      const mc = String(cleanText || '').trim().replace(/^[/!]/, '');
+      if (/^forget\s+me$/i.test(mc)) {
+        try {
+          memory.clearUserMemory(memoryUserId);
+          training.clear?.(memoryUserId);
+        } catch (e) { logger.warn({ err: e.message }, 'forget me failed'); }
+        return sendText(jid, `🧹 Forgot your captured conversations and learned habits. Fresh start for you.`);
+      }
+      const clearHere = /^clear\s+(?:chat|this\s+chat'?s)\s+memory$|^clear\s+memory\s+here$/i.test(mc);
+      const clearAll = /^clear\s+(?:all\s+)?(?:cached\s+)?memory$|^clear\s+memory\s+all$|^reset\s+(?:the\s+)?(?:whole\s+|all\s+|bot\s+)?memory$|^resetmemory$|^wipe\s+(?:all\s+)?memory$/i.test(mc);
+      if (clearHere && (senderIsOwner || senderIsElevated)) {
+        let r = { sessions: 0, interactions: 0 };
+        try { r = memory.clearChatMemory(jid) || r; } catch (e) { logger.warn({ err: e.message }, 'clear chat memory failed'); }
+        return sendText(jid, `🧹 Cleared captured conversations for this chat: ${r.sessions} session(s), ${r.interactions} stored line(s).`);
+      }
+      if (clearAll && senderIsOwner) {
+        let r = { sessions: 0, chats: 0, profiles: 0, interactions: 0 };
+        let trained = 0;
+        let groupLogs = 0;
+        let backupId = 'none';
+        try { backupId = memory.backupMemory()?.id || 'none'; } catch (e) { logger.warn({ err: e.message }, 'pre-reset memory backup failed'); }
+        try { r = memory.clearAllMemory() || r; } catch (e) { logger.warn({ err: e.message }, 'clear all memory failed'); }
+        try { trained = training.clearAll?.() || 0; } catch {}
+        try { groupLogs = require('../plugins/groupCommands').clearAllLogs?.() || 0; } catch {}
+        return sendText(jid, `🧹 Reset full bot memory: ${r.sessions} conversation session(s), ${r.chats} chat log(s), ${r.profiles} profile(s), ${r.interactions} stored line(s), ${trained} training record(s), ${groupLogs} group chat log(s).\n💾 Safety backup: \`${backupId}\` — restore with \`memory restore ${backupId}\`.`);
+      }
+      if ((clearHere || clearAll) && !senderIsOwner) {
+        return sendText(jid, clearHere ? 'Only an admin or the owner can clear this chat’s memory.' : 'Only the owner can clear all captured memory.');
+      }
+    }
+
+    // Soft anti-spam: high score messages from non-staff are dropped quietly.
+    // Always record the message (that is what decays the score), but never drop
+    // a direct call to Nick — casual callers send a few quick messages and can
+    // otherwise get pushed over the threshold and look "ignored".
     if (isGroup && !senderIsElevated && rawText) {
       try {
         const sp = spamScore.note(jid, resolvedSenderJid || senderJid, rawText);
-        if (spamScore.isSpam(jid, resolvedSenderJid || senderJid, 75)) {
+        if (!explicitCall && !repliedToBot && spamScore.isSpam(jid, resolvedSenderJid || senderJid, 75)) {
           logger.info({ jid, score: sp.score }, 'spam score drop');
           return;
         }
@@ -1334,7 +1407,8 @@ if (/^(self[- ]?fix|fix yourself|health check)$/i.test(rawText) && perms.isOwner
       quotedParticipant,
       quotedText: quotedText || null,
       imageMime: mt.imageMessage?.mimetype || quotedUnwrapped?.imageMessage?.mimetype || '',
-      botJids: selfNums,
+      // Plugin code expects an array here; selfIds() returns a Set.
+      botJids: toArray(selfNums),
       messageMeta: {
         present: !!msg && typeof msg === 'object',
         id: msg.key?.id || '',
@@ -1363,13 +1437,84 @@ if (/^(self[- ]?fix|fix yourself|health check)$/i.test(rawText) && perms.isOwner
       // Unaddressed messages must not enter the command/AI path.
       // Owner control commands remain available without a tag because they are
       // explicit privileged commands, not conversational replies.
-      const ownerControlCommand = /^(?:private|public|open|unlock|lockdown|owner[- ]only|group[- ]only|groups[- ]only|dm[- ]only|dms[- ]only|private[- ]chat[- ]only|all[- ]chats|scope[- ]all|all|maintenance(?:\s+(?:on|off))?|ignore(?:\s+(?:this\s+)?(?:chat|here))?|mute(?:\s+(?:this\s+)?(?:chat|here))?|silence(?:\s+(?:this\s+)?(?:chat|here))?|listen(?:\s+(?:to\s+)?(?:this\s+)?(?:chat|here))?|unignore(?:\s+(?:this\s+)?(?:chat|here))?|unsilence(?:\s+(?:this\s+)?(?:chat|here))?|clear\s+ignored(?:\s+chats)?|owner\s+status|bot\s+status|autostatus\s+view(?:\s+(?:on|off|enable|disable|status))?|autotyping(?:\s+(?:on|off|enable|disable|status))?|mode(?:\s+(?:public|private))?)$/i;
+      const ownerControlCommand = /^(?:private|public|open|unlock|lockdown|owner[- ]only|group[- ]only|groups[- ]only|dm[- ]only|dms[- ]only|private[- ]chat[- ]only|all[- ]chats|scope[- ]all|all|maintenance(?:\s+(?:on|off))?|ignore(?:\s+(?:this\s+)?(?:chat|here))?|mute(?:\s+(?:this\s+)?(?:chat|here))?|silence(?:\s+(?:this\s+)?(?:chat|here))?|listen(?:\s+(?:to\s+)?(?:this\s+)?(?:chat|here))?|unignore(?:\s+(?:this\s+)?(?:chat|here))?|unsilence(?:\s+(?:this\s+)?(?:chat|here))?|clear\s+ignored(?:\s+chats)?|owner\s+status|bot\s+status|autostatus(?:\s+view)?(?:\s+(?:on|off|enable|disable|status))?|autotyping(?:\s+(?:on|off|enable|disable|status))?|mode(?:\s+(?:public|private))?)$/i;
       const addressedNow = isAddressed || (senderIsElevated && ownerControlCommand.test(t))
         || (senderIsOwner && /^restart$/i.test(t));
       if (addressedNow) {
       const sendPlainCommandText = sendText;
       const fastHandled = await (async () => {
         const sendText = (target, body, opts = {}) => sendPlainCommandText(target, messageLayout.commandResponse(body), opts);
+
+        // Owner dry-run for the call gate. Tests as an ordinary member by default so
+        // mass-tag/bot-suppression paths are exercised realistically.
+        if (senderIsOwner || perms.isOwner(actorJid)) {
+          const tc = /^test\s+call(?:\s+(dm|group))?(?:\s+(owner|member))?\s+([\s\S]+)$/i.exec(t);
+          if (tc) {
+            const simulateGroup = tc[1] ? /^group$/i.test(tc[1]) : isGroup;
+            const simulateElevated = tc[2] ? /^owner$/i.test(tc[2]) : false;
+            const testText = tc[3].trim();
+            const testMentions = [...new Set(
+              [...testText.matchAll(/@([A-Za-z0-9._:-]+@(?:lid|s\.whatsapp\.net)|\d{6,})/gi)].map((m) => {
+                const value = m[1] || '';
+                return /@(?:lid|s\.whatsapp\.net)$/i.test(value)
+                  ? (value.startsWith('@') ? value : `@${value}`)
+                  : `${value.replace(/\D/g, '')}@s.whatsapp.net`;
+              })
+            )];
+            const syntheticMt = {
+              extendedTextMessage: {
+                text: testText,
+                ...(testMentions.length ? { contextInfo: { mentionedJid: testMentions } } : {}),
+              },
+            };
+            const syntheticMsg = {
+              key: {
+                remoteJid: simulateGroup ? '120363000000000000@g.us' : `${numFromJid(senderJid) || '254000000000'}@s.whatsapp.net`,
+                id: 'call-gate-test',
+                participant: senderJid,
+                fromMe: false,
+              },
+              message: syntheticMt,
+              pushName: '',
+            };
+            const cg = evaluateCallGate({
+              mt: syntheticMt,
+              msg: syntheticMsg,
+              isGroup: simulateGroup,
+              senderJid,
+              actorJid: senderJid,
+              sock,
+              preJidMap,
+              senderIsElevated: simulateElevated,
+              botNameList,
+              selfNums,
+              jidResolver,
+              commandPlugins,
+              autoreply,
+              config,
+              stripBotAddress,
+              botNameWordPattern,
+              isCoreMenuCommand,
+              numFromJid,
+            });
+            const lines = [
+              '🧪 *Call-gate dry run*',
+              `Message: ${testText.slice(0, 180)}`,
+              `Chat: ${simulateGroup ? 'group' : 'DM'} · sender: ${simulateElevated ? 'owner/staff' : 'ordinary member'}`,
+              `Would wake Nick: *${cg.wouldWake ? 'YES' : 'NO'}*`,
+            ];
+            if (cg.suppressedBy.length) lines.push(`Suppressed by: ${cg.suppressedBy.join(', ')}`);
+            if (cg.wakeReasons.length) lines.push(`Reasons: ${cg.wakeReasons.join(', ')}`);
+            if (!cg.suppressedBy.length && !cg.wakeReasons.length) lines.push('No explicit call detected.');
+            lines.push(`Clean text: ${cg.cleanText.slice(0, 120) || '—'}`);
+            lines.push(`Mentions: ${cg.mentionCount}`);
+            return sendText(jid, lines.join('\n'));
+          }
+          if (/^test\s+call(?:\s+(?:dm|group|owner|member))?$/i.test(t)) {
+            return sendText(jid, 'Usage: `test call <message>` · `test call group <message>` · `test call dm owner <message>`');
+          }
+        }
+
         const pluginResult = await commandPlugins.route(pluginContext, commandInput);
         if (pluginResult.handled) {
           const sent = await sendText(jid, pluginResult.text || '');
@@ -1382,7 +1527,7 @@ if (/^(self[- ]?fix|fix yourself|health check)$/i.test(rawText) && perms.isOwner
           }
           return sent;
         }
-        const autoStatusCommand = /^(autostatus\s+view|autotyping)(?:\s+(on|off|enable|disable|status))?$/i.exec(t);
+        const autoStatusCommand = /^(autostatus(?:\s+view)?|autotyping)(?:\s+(on|off|enable|disable|status))?$/i.exec(t);
           if (autoStatusCommand) {
           if (!perms.isOwner(actorJid) && !perms.isOwner(senderJid)) return sendText(jid, messageLayout.accessDenied('owner'));
           const feature = autoStatusCommand[1].toLowerCase().startsWith('autostatus')
@@ -2218,7 +2363,7 @@ User language preference: ${userLang}. Reply in that language when reasonable.`)
         sendImage: (source, caption) => sendImage(jid, source, caption, { quoted: msg }),
         sendAudio: (source, opts = {}) => sendAudio(jid, source, { ...opts, quoted: opts.quoted || msg }),
         sendVideo: (source, caption) => sendVideo(jid, source, caption, { quoted: msg }),
-        sendSticker: (buffer) => sendSticker(jid, buffer, { quoted: msg }),
+        sendSticker: (buffer) => sendBotSticker(jid, buffer, { quoted: msg }),
         imageBuffer,
         videoBuffer,
         quotedImageBuffer,
@@ -2290,6 +2435,33 @@ User language preference: ${userLang}. Reply in that language when reasonable.`)
         }
       }
 
+      // WhatsApp renders @mentions as raw phone digits inside message text. The model
+      // was copying those digits ("hi to @254...") and the voice-note tool then spoke
+      // them aloud. Replace them with a human label for the AI; the real WhatsApp
+      // mention is attached separately when the reply is sent.
+      const mentionLabels = new Map();
+      const aliasMap = jidResolver.aliases();
+      const allMentionIds = [...new Set([
+        ...(mentions || []),
+        ...(resolvedMentions || []),
+      ].filter(Boolean).map(String))];
+      for (const mjid of allMentionIds) {
+        const label = String(senderName?.(mjid, jid) || '').replace(/[\r\n]+/g, ' ').trim();
+        const safeLabel = label && !/^\+?[\d\s().-]+$/.test(label) ? label : 'the tagged member';
+        // A mention can arrive as @lid while the text still shows the LID digits,
+        // but be normalized to a phone JID before we see it. Register every known
+        // numeric form (raw, resolved, cached alias) so none of them reach the AI.
+        for (const candidate of [mjid, jidResolver.resolve(mjid, jidMap), aliasMap.get(mjid), aliasMap.get(String(mjid).replace(/:\d+@/, '@'))]) {
+          const n = numFromJid(String(candidate || '').replace(/:\d+@/, '@'));
+          if (/^\+?\d{6,}$/.test(n)) mentionLabels.set(n.replace(/^\+/, ''), safeLabel);
+        }
+      }
+      const sanitizeMentionDigits = (text) => String(text || '')
+        .replace(/@\+?(\d{6,})/g, (_full, digits) => `@${mentionLabels.get(digits.replace(/^\+/, '')) || 'the tagged member'}`)
+        .replace(/(?<![\w@])\+?(\d{9,})(?![\w])/g, (_full, digits) => mentionLabels.get(digits.replace(/^\+/, '')) || 'the tagged member');
+      effectiveClean = sanitizeMentionDigits(effectiveClean);
+      quotedText = sanitizeMentionDigits(quotedText);
+
       // Build the user turn: media (image/video/audio) block, and/or attachment info text.
       let userText;
       if (mediaContent) {
@@ -2316,6 +2488,22 @@ User language preference: ${userLang}. Reply in that language when reasonable.`)
           : body;
       }
 
+      if (quotedInvestigateCall) {
+        const investigateTag = '[Nick investigator mode: the replied-to message/image is the subject. Analyze the image and read/transcribe every visible word (OCR). Explain what it says and what it means in plain language, identify names/logos/links/claims where possible, and use web search to verify anything that needs checking. Separate what you can actually see from what you infer; never invent unreadable text.]';
+        if (Array.isArray(userText)) {
+          const textIndex = userText.findIndex((part) => part?.type === 'text');
+          if (textIndex >= 0) {
+            userText = userText.map((part, index) => index === textIndex
+              ? { ...part, text: `${investigateTag}\n\n${part.text || ''}` }
+              : part);
+          } else {
+            userText = [{ type: 'text', text: investigateTag }, ...userText];
+          }
+        } else {
+          userText = `${investigateTag}\n\n${userText || ''}`;
+        }
+      }
+
       if (responseTargetJids.length) {
         const targetName = String(senderName?.(responseTargetJids[0], jid) || '')
           .replace(/[\r\n]+/g, ' ')
@@ -2324,7 +2512,7 @@ User language preference: ${userLang}. Reply in that language when reasonable.`)
         const safeTargetName = targetName && !/^\+?[\d\s().-]+$/.test(targetName)
           ? targetName
           : 'the tagged group member';
-        const targetContext = `[Group reply target: ${safeTargetName}. Nick was explicitly called; address the tagged member, not the caller. Use light humor only if the exchange is clearly playful; otherwise respond seriously and respectfully.]`;
+        const targetContext = `[Group reply target: ${safeTargetName}. Nick was explicitly called. Greet/address the tagged member naturally — e.g. "Hey!" or "Hi there!" — never write "hi to @number", never repeat any phone number or @digits, and never address the target by digits. The WhatsApp mention tag is added automatically outside your reply. Follow any explicit tone call (romantic, flirty, joke, funny, roast, playful-rude, hype, calm, serious, caring) and use matching emojis for the vibe. Keep ordinary chat replies to 1-3 short sentences unless detail was requested.]`;
         if (typeof userText === 'string') {
           userText = `${targetContext}\n\n${userText}`;
         } else if (Array.isArray(userText)) {
@@ -2405,7 +2593,14 @@ User language preference: ${userLang}. Reply in that language when reasonable.`)
           training.observeFeedback(memoryUserId, effectiveClean || cleanText || '');
         } catch {}
         const trainBlock = (() => { try { return training.promptBlock(memoryUserId) || ''; } catch { return ''; } })();
-        systemWithLang = (typeof systemWithLang === 'string' ? systemWithLang : system) + (systemEditBoost || '') + trainBlock;
+        // Final-turn brevity guard for ordinary conversation. Image investigations,
+        // attachments, commands, and explicit detail requests are exempt.
+        const askedForDetail = /\b(?:explain|describe|detail(?:ed)?|full|complete|long|essay|story|step[- ]by[- ]step|write|article|breakdown|analyze|investigate)\b/i
+          .test(String(effectiveClean || '') + ' ' + String(quotedText || ''));
+        const isDetailTurn = quotedInvestigateCall || !!mediaContent || !!attachmentInfo
+          || commandPlugins.isExplicitCommand(cleanText) || !!systemEditBoost || askedForDetail;
+        const chatBrevityBoost = isDetailTurn ? '' : '\n\nNORMAL CHAT BREVITY (this turn): Reply in 1-3 short sentences. No headings, no bullet lists, no paragraphs. Give the best-guess answer first; do not ask a menu of clarifying questions for short/ambiguous messages. Never end with generic filler like "let me know so I can help". Be warm or flirty if the vibe calls for it, but stay tight. Long answers are only for explicit detail requests, investigations, or real tasks.';
+        systemWithLang = (typeof systemWithLang === 'string' ? systemWithLang : system) + (systemEditBoost || '') + trainBlock + chatBrevityBoost;
         let result = await aiClient.runAgent({ system: systemWithLang, history, userText, toolCtx });
 
         // Final safety net: never let raw tool/function JSON leak into WhatsApp chat
@@ -2521,17 +2716,31 @@ User language preference: ${userLang}. Reply in that language when reasonable.`)
       const isAudioIn = curMediaType === 'audioMessage' || mt.ptvMessage;
       let sentMsg;
       const preferVoice = isAudioIn && !responseTargetJids.length && Math.random() < 0.55;
+      // Strip any leftover mention placeholders from the model's text. Real mentions
+      // are attached via `mentions` metadata below, not by printing raw digits.
+      answer = String(answer || '')
+        .replace(/@\+?\d{6,}\b/g, '')
+        .replace(/\b(?:hi|hello|hey|greetings?)\s+to\s+(?:@?\+?\d{6,}\b|the tagged (?:member|user))\b[.!]?/gi, 'Hey there!');
+      for (const digits of mentionLabels.keys()) {
+        answer = answer.replace(new RegExp(`@?\\+?${digits}\\b`, 'g'), '');
+      }
+      answer = answer.replace(/\s{2,}/g, ' ').trim();
+      if (!answer) answer = 'Hey there!';
       const mentionTargetNumber = responseTargetJids.length
         ? jidResolver.number(responseTargetJids[0], jidMap) || numFromJid(responseTargetJids[0])
         : '';
-      if (mentionTargetNumber) answer = `@${mentionTargetNumber} ${answer}`;
+      // WhatsApp needs the @digits token in the text to render a real mention tag.
+      // It renders as the contact name in the app, so this is safe for display.
+      if (mentionTargetNumber && !/@\+?\d{6,}\b/.test(answer)) answer = `@${mentionTargetNumber} ${answer}`;
       const responseOptions = {
         quoted: msg,
         ...(responseTargetJids.length ? { mentions: responseTargetJids } : {}),
       };
       if (preferVoice) {
         try {
-          const speech = await tts.speak(answer, { voice: process.env.TTS_VOICE || 'en-US-JennyNeural' });
+          // Never speak phone digits or @mentions in a voice note.
+          const spokenText = answer.replace(/@\+?\d+\b/g, '').replace(/\+?\d{7,}\b/g, '').trim() || 'Hey there!';
+          const speech = await tts.speak(spokenText, { voice: process.env.TTS_VOICE || 'en-US-JennyNeural' });
           const buf = speech.buffer || (speech.file ? (await tts.toWhatsAppVoice(speech.file)).buffer : null);
           if (!buf) throw new Error('empty opus');
           sentMsg = await sendAudio(jid, buf, {
@@ -2556,7 +2765,7 @@ User language preference: ${userLang}. Reply in that language when reasonable.`)
       // --- occasionally drop a random saved sticker into the conversation ---
       if (stickers.count() >= config.stickers.minSavedForRandomDrop && Math.random() < config.stickers.randomDropChance) {
         const random = stickers.getRandom();
-        if (random) await sendSticker(jid, random).catch(() => {});
+        if (random) await sendBotSticker(jid, random).catch(() => {});
       }
     } catch (e) {
       logger.error({ err: e.message, stack: e.stack }, 'router error');

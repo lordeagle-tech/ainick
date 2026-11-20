@@ -8,7 +8,7 @@ const permissions = require('../utils/permissions');
 const roles = require('../features').roles;
 const afk = require('../features').afk;
 const { Collection } = require('../db');
-const { numFromJid } = require('../utils/helpers');
+const { numFromJid, toArray } = require('../utils/helpers');
 const commandPrefix = require('./commandPrefix');
 const messageLayout = require('../utils/messageLayout');
 const groupControl = require('./groupControl');
@@ -19,6 +19,10 @@ const MAX_TAGS = 100;
 const MAX_BULK_REMOVALS = 10;
 const timers = new Map();
 const groupLog = new Collection('group_chat_log', {});
+
+function botJids(ctx) {
+  return toArray(ctx.botJids).filter(Boolean).map(String);
+}
 
 const pictureSetCommands = ['gcicon', 'seticon', 'setppgc', 'setppgroup', 'setgcprofile'];
 const pictureGetCommands = ['getgcpp', 'gcpic', 'grouppic', 'gcphoto'];
@@ -37,7 +41,7 @@ const requestedCommands = [
   'warn', 'warning', 'unwarn', 'unwarning',
   'welcome', 'goodbye', 'setwelcome', 'setevents', 'welcometoggle',
   'antilink', 'antilinkgc', 'antigrouplink', 'antitag', 'antitagadmin', 'antimentionGC', 'antimention', 'antimentiongroup', 'antibadword', 'addbadword', 'antisticker', 'nostic', 'nosticker', 'antispam', 'antiviewonce', 'antivo', 'antiview',
-  'timer', 'countdown', 'poll', 'vote', 'afk', 'broadcast', 'announce', 'say', 'sayme', 'repeat', 'left', 'join', 'j', 'joingc', 'delete', 'groupmenu', 'groupactions', 'groupsettings', 'disp-1', 'disp-7', 'disp-90', 'disp-off', 'roast', 'tagaway',
+  'timer', 'countdown', 'poll', 'vote', 'afk', 'broadcast', 'announce', 'say', 'sayme', 'repeat', 'left', 'leave', 'join', 'j', 'joingc', 'delete', 'groupmenu', 'groupactions', 'groupsettings', 'disp-1', 'disp-7', 'disp-90', 'disp-off', 'roast', 'tagaway',
 ];
 const pluginCommands = new Set(requestedCommands.map((name) => name.toLowerCase()));
 
@@ -178,7 +182,7 @@ async function handleCreateGroup(ctx, commandText) {
   if (!body || !participants.length) {
     return { handled: true, text: 'Usage: creategroup Group name (mention at least one participant).' };
   }
-  if (participants.some((jid) => (ctx.botJids || []).includes(jid))) {
+  if (participants.some((jid) => botJids(ctx).includes(jid))) {
     return { handled: true, text: 'Do not include Nick as a participant; WhatsApp adds the bot when it creates the group.' };
   }
   try {
@@ -244,7 +248,7 @@ async function handleBulkKick(ctx, name, tail) {
   const eligible = (meta.participants || []).filter((p) => {
     if (isParticipantAdmin(p)) return false;
     const ids = [p?.id, p?.jid, p?.lid, p?.phoneNumber].filter(Boolean).map(String);
-    if ((ctx.botJids || []).some((id) => ids.includes(String(id)))) return false;
+    if (botJids(ctx).some((id) => ids.includes(String(id)))) return false;
     if (roles.isOwner(ids)) return false;
     if (name === 'kickall') return true;
     const number = ids.map(numFromJid).find(Boolean);
@@ -283,12 +287,18 @@ async function route(ctx, input) {
   if (['join', 'j', 'joingc'].includes(name)) {
     const denial = requireOwner(ctx);
     if (denial) return { handled: true, text: denial };
-    const code = (tail.match(/(?:https?:\/\/)?chat\.whatsapp\.com\/([A-Za-z0-9_-]+)/i) || [])[1];
-    if (!code) return { handled: true, text: 'Include a WhatsApp group invite link, e.g. `join https://chat.whatsapp.com/CODE`.' };
+    // "Slide to a link": the invite may be in the message being replied to.
+    const linkSources = [tail, ctx.quotedText || ''].filter(Boolean).join('\n');
+    let code = (linkSources.match(/(?:https?:\/\/)?chat\.whatsapp\.com\/([A-Za-z0-9_-]+)/i) || [])[1];
+    if (!code) {
+      const bare = linkSources.trim().split(/\s+/)[0] || '';
+      if (/^[A-Za-z0-9_-]{8,}$/.test(bare)) code = bare;
+    }
+    if (!code) return { handled: true, text: 'Include a WhatsApp group invite link, or reply to a message containing one and send `join` / `j`.' };
     try { await ctx.sock.groupAcceptInvite(code); return { handled: true, text: '✅ Joined the group.' }; }
     catch (e) { return { handled: true, text: `Could not join the group: ${e.message}` }; }
   }
-  if (['left'].includes(name)) {
+  if (['left', 'leave'].includes(name)) {
     const denial = requireOwner(ctx);
     if (denial) return { handled: true, text: denial };
     if (!ctx.isGroup) return { handled: true, text: 'Use `left confirm` inside the group Nick should leave.' };
@@ -647,8 +657,21 @@ async function handleParticipantUpdate(sock, event) {
 
 const menuCommands = [...new Set(requestedCommands)];
 
+function clearAllLogs() {
+  const count = Object.keys(groupLog.all()).length;
+  for (const key of Object.keys(groupLog.all())) groupLog.delete(key);
+  return count;
+}
+
+function getLogs(chatId, limit = 200) {
+  const logs = groupLog.get(chatId, []) || [];
+  return logs.slice(-Math.max(1, Math.min(500, Number(limit) || 200)));
+}
+
 module.exports = {
   route,
+  clearAllLogs,
+  getLogs,
   handleMedia,
   handleParticipantUpdate,
   isCommand,

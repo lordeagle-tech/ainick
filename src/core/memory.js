@@ -5,7 +5,9 @@
 //
 // The second scope is critical in groups: User A's conversation can never become part of
 // User B's prompt just because they are in the same WhatsApp group.
-const { Collection } = require('../db');
+const fs = require('fs');
+const path = require('path');
+const { Collection, setAll, getAll, flushAllSync } = require('../db');
 
 // Keep substantially more durable context by default. Deployments can lower these
 // limits when their model context window or storage budget is smaller.
@@ -123,6 +125,10 @@ function similarText(a, b) {
  * Also caps the window at MAX_RECENT_TURNS so the context never bloats.
  * Older turns get summarised via getUserMemorySummary, not dumped raw. */
 const MAX_RECENT_TURNS = Number(process.env.MEMORY_PROMPT_TURNS || 24);
+// Old long assistant replies were being replayed as implicit length targets, making
+// Nick verbose with some users but not others. Cap them at prompt time only;
+// stored history stays intact.
+const MAX_PROMPT_ASSISTANT_CHARS = Number(process.env.MEMORY_PROMPT_ASSISTANT_CHARS || 400);
 
 function getScopedForPrompt(chatId, userId) {
   const arr = getScoped(chatId, userId);
@@ -132,6 +138,10 @@ function getScopedForPrompt(chatId, userId) {
   for (const turn of trimmed) {
     const prev = out[out.length - 1];
     if (prev && prev.role === turn.role && similarText(prev.content, turn.content)) continue;
+    if (turn.role === 'assistant' && String(turn.content || '').length > MAX_PROMPT_ASSISTANT_CHARS) {
+      out.push({ ...turn, content: String(turn.content).slice(0, MAX_PROMPT_ASSISTANT_CHARS).trimEnd() + '…' });
+      continue;
+    }
     out.push(turn);
   }
   return out;
@@ -163,6 +173,176 @@ function clearUserMemory(userId) {
   }
   userProfiles.delete(String(userId));
   userProfileStore.delete(String(userId));
+}
+
+/** Clear every captured conversation for one chat (all users in that chat). */
+function clearChatMemory(chatId) {
+  const prefix = `${String(chatId || '')}::`;
+  let sessions = 0;
+  for (const key of Object.keys(scopedHistoryStore.all())) {
+    if (key.startsWith(prefix)) {
+      scopedHistoryStore.delete(key);
+      sessions++;
+    }
+  }
+  if (historyStore.has(chatId)) {
+    historyStore.delete(chatId);
+  }
+  let interactions = 0;
+  for (const [userId, profile] of userProfiles.entries()) {
+    if (!Array.isArray(profile?.interactions)) continue;
+    const before = profile.interactions.length;
+    profile.interactions = profile.interactions.filter((ix) => String(ix.chatId || '') !== String(chatId));
+    const removed = before - profile.interactions.length;
+    if (removed) {
+      interactions += removed;
+      userProfiles.set(userId, profile);
+      userProfileStore.set(userId, profile);
+    }
+  }
+  return { sessions, interactions };
+}
+
+/** Owner wipe: remove all captured conversations and profiles. */
+function clearAllMemory() {
+  let sessions = 0;
+  for (const key of Object.keys(scopedHistoryStore.all())) {
+    scopedHistoryStore.delete(key);
+    sessions++;
+  }
+  let chats = 0;
+  for (const key of Object.keys(historyStore.all())) {
+    historyStore.delete(key);
+    chats++;
+  }
+  let profiles = 0;
+  let interactions = 0;
+  for (const userId of Object.keys(userProfileStore.all())) {
+    const profile = userProfiles.get(userId) || userProfileStore.get(userId) || {};
+    interactions += (profile.interactions || []).length;
+    userProfiles.delete(userId);
+    userProfileStore.delete(userId);
+    profiles++;
+  }
+  chatContext.clear();
+  return { sessions, chats, profiles, interactions };
+}
+
+// --- Owner backup / restore -------------------------------------------------
+// Backups are stored outside /data so `reset memory` cannot delete them.
+const MEMORY_BACKUP_FILES = [
+  'user_chat_history',
+  'user_profiles',
+  'chat_history',
+  'user_training',
+  'group_chat_log',
+];
+const MEMORY_FACT_KEY = '__nick_facts';
+const MEMORY_BACKUP_DIR = path.join(__dirname, '..', '..', '.work', 'memory-backups');
+
+function backupMemory() {
+  flushAllSync();
+  fs.mkdirSync(MEMORY_BACKUP_DIR, { recursive: true });
+  const id = new Date().toISOString().replace(/[:.]/g, '-');
+  const file = path.join(MEMORY_BACKUP_DIR, `${id}.json`);
+  const payload = {
+    version: 1,
+    id,
+    createdAt: Date.now(),
+    files: {},
+  };
+  for (const name of MEMORY_BACKUP_FILES) payload.files[name] = getAll(name, {});
+  fs.writeFileSync(file, JSON.stringify(payload, null, 2));
+  return { id, file, files: MEMORY_BACKUP_FILES.length, bytes: fs.statSync(file).size };
+}
+
+function listMemoryBackups(limit = 10) {
+  try {
+    if (!fs.existsSync(MEMORY_BACKUP_DIR)) return [];
+    return fs.readdirSync(MEMORY_BACKUP_DIR)
+      .filter((name) => /^[0-9TZ-]+\.json$/i.test(name))
+      .map((name) => {
+        const id = name.replace(/\.json$/i, '');
+        try {
+          const payload = JSON.parse(fs.readFileSync(path.join(MEMORY_BACKUP_DIR, name), 'utf8'));
+          return { id, createdAt: payload.createdAt || 0, files: Object.keys(payload.files || {}).length };
+        } catch { return { id, createdAt: 0, files: 0 }; }
+      })
+      .sort((a, b) => b.createdAt - a.createdAt)
+      .slice(0, Math.max(1, Math.min(50, Number(limit) || 10)));
+  } catch { return []; }
+}
+
+function reloadMemoryCaches() {
+  userProfiles.clear();
+  for (const [userId, profile] of Object.entries(userProfileStore.all() || {})) {
+    userProfiles.set(userId, profile);
+  }
+  chatContext.clear();
+  for (const [phoneNumber, profile] of userProfiles.entries()) {
+    const chats = chatContext.get(`${phoneNumber}:chats`) || new Set();
+    for (const interaction of profile.interactions || []) {
+      if (interaction.chatId) chats.add(interaction.chatId);
+    }
+    if (chats.size) chatContext.set(`${phoneNumber}:chats`, chats);
+  }
+}
+
+function restoreMemory(id) {
+  const safeId = String(id || '').trim();
+  if (!/^[0-9TZ-]+$/.test(safeId)) throw new Error('Invalid backup id.');
+  const file = path.join(MEMORY_BACKUP_DIR, `${safeId}.json`);
+  if (!fs.existsSync(file)) throw new Error('Backup not found.');
+  const payload = JSON.parse(fs.readFileSync(file, 'utf8'));
+  if (payload.version !== 1 || !payload.files || typeof payload.files !== 'object') {
+    throw new Error('Backup format is not supported.');
+  }
+  let restored = 0;
+  for (const name of MEMORY_BACKUP_FILES) {
+    if (Object.prototype.hasOwnProperty.call(payload.files, name)) {
+      setAll(name, payload.files[name] || {});
+      restored++;
+    }
+  }
+  reloadMemoryCaches();
+  flushAllSync();
+  return { id: safeId, restored, createdAt: payload.createdAt || 0 };
+}
+
+// --- Structured owner facts -------------------------------------------------
+function getFacts(userId) {
+  const profile = getUserProfile(userId);
+  return Array.isArray(profile.preferences?.[MEMORY_FACT_KEY])
+    ? profile.preferences[MEMORY_FACT_KEY]
+    : [];
+}
+
+function rememberFact(userId, text, scope = 'global') {
+  const clean = redactSensitive(String(text || '')).replace(/\s+/g, ' ').trim().slice(0, 180);
+  if (!clean) return { ok: false, error: 'No fact supplied.' };
+  const profile = getUserProfile(userId);
+  const facts = getFacts(userId).filter((f) => String(f.text || '').toLowerCase() !== clean.toLowerCase());
+  facts.push({ text: clean, scope: String(scope || 'global').slice(0, 40), at: Date.now() });
+  profile.preferences[MEMORY_FACT_KEY] = facts.slice(-20);
+  profile.lastSeen = Date.now();
+  userProfiles.set(String(userId), profile);
+  userProfileStore.set(String(userId), profile);
+  return { ok: true, fact: clean, count: profile.preferences[MEMORY_FACT_KEY].length };
+}
+
+function forgetFact(userId, selector) {
+  const facts = getFacts(userId);
+  const key = String(selector || '').trim();
+  let index = -1;
+  if (/^\d+$/.test(key)) index = Number(key) - 1;
+  else if (key) index = facts.findIndex((f) => String(f.text || '').toLowerCase().includes(key.toLowerCase()));
+  if (index < 0 || index >= facts.length) return { ok: false, error: 'Fact not found.' };
+  const [removed] = facts.splice(index, 1);
+  const profile = getUserProfile(userId);
+  profile.preferences[MEMORY_FACT_KEY] = facts;
+  userProfiles.set(String(userId), profile);
+  userProfileStore.set(String(userId), profile);
+  return { ok: true, removed: removed.text, count: facts.length };
 }
 
 function getUserProfile(phoneNumber) {
@@ -325,6 +505,14 @@ module.exports = {
   pushScoped,
   clearScoped,
   clearUserMemory,
+  clearChatMemory,
+  clearAllMemory,
+  backupMemory,
+  listMemoryBackups,
+  restoreMemory,
+  rememberFact,
+  getFacts,
+  forgetFact,
   getUserProfile,
   getUserProfileSummary,
   redactSensitive,

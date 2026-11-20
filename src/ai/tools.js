@@ -3408,7 +3408,15 @@ function getToolsFor(isGroup) {
   const base = isGroup
     ? [...GENERAL_TOOLS, ...GROUP_TOOLS, ...custom, ...mcpTools]
     : [...GENERAL_TOOLS, ...custom, ...mcpTools];
-  return base.filter(allowed);
+  // Duplicate names waste tool budget and can confuse the model. Later schemas
+  // (custom tools / MCP) intentionally override earlier built-ins with the same name.
+  const byName = new Map();
+  for (const tool of base.filter(allowed)) {
+    const name = tool?.function?.name;
+    if (name) byName.set(name, tool);
+    else byName.set(`__anonymous_${byName.size}`, tool);
+  }
+  return [...byName.values()];
 }
 
 // Implementations. `ctx` = { sock, chatId, senderJid, isGroup, groupMeta, sendFile }
@@ -6977,25 +6985,50 @@ async function toolUnlockViewOnce(args, ctx) {
     if (ctx.quotedVideoBuffer) { await sendMedia('video', ctx.quotedVideoBuffer); return { ok: true, sent: dest }; }
     if (ctx.quotedAudioBuffer) { await sendMedia('audio', ctx.quotedAudioBuffer, ctx.quotedAudioMime); return { ok: true, sent: dest }; }
 
-    // Unwrap quoted view-once (all known wrappers)
+    // WhatsApp redacts quoted view-once media (no url/mediaKey). Prefer the
+    // original message captured when Nick first saw it, if still in memory.
     const ctxInfo = ctx.quotedContext
       || ctx.replyMessage?.message?.extendedTextMessage?.contextInfo
       || ctx.replyMessage?.message?.imageMessage?.contextInfo
       || ctx.replyMessage?.message?.videoMessage?.contextInfo
       || {};
-    let qm = ctx.quotedMessage
+    const qm = ctx.quotedMessage
       || ctxInfo.quotedMessage
       || ctx.replyMessage?.message?.extendedTextMessage?.contextInfo?.quotedMessage;
-    let inner = qm;
-    for (let i = 0; i < 6 && inner; i++) {
-      if (inner.viewOnceMessageV2?.message) { inner = inner.viewOnceMessageV2.message; continue; }
-      if (inner.viewOnceMessage?.message) { inner = inner.viewOnceMessage.message; continue; }
-      if (inner.viewOnceMessageV2Extension?.message) { inner = inner.viewOnceMessageV2Extension.message; continue; }
-      if (inner.ephemeralMessage?.message) { inner = inner.ephemeralMessage.message; continue; }
-      break;
-    }
+    const unwrapVo = (message) => {
+      let node = message;
+      for (let i = 0; i < 8 && node; i++) {
+        if (node.viewOnceMessageV2?.message) { node = node.viewOnceMessageV2.message; continue; }
+        if (node.viewOnceMessage?.message) { node = node.viewOnceMessage.message; continue; }
+        if (node.viewOnceMessageV2Extension?.message) { node = node.viewOnceMessageV2Extension.message; continue; }
+        if (node.ephemeralMessage?.message) { node = node.ephemeralMessage.message; continue; }
+        break;
+      }
+      return node;
+    };
+    const usableMedia = (node) => {
+      const m = node?.imageMessage || node?.videoMessage || node?.audioMessage;
+      return m?.mediaKey && (m.directPath || m.url) ? m : null;
+    };
+    const storedCandidates = ctx.originalVoCandidates
+      || (ctx.originalVoMessage ? [ctx.originalVoMessage] : []);
+    const candidateEntries = [
+      ...storedCandidates.filter(Boolean).map((m) => ({
+        node: m?.message ? unwrapVo(m.message) : null,
+        key: m?.key || null,
+      })),
+      { node: qm ? unwrapVo(qm) : null, key: null },
+    ];
+    const usableEntry = candidateEntries.find((e) => usableMedia(e.node));
+    const anyMediaEntry = candidateEntries.find((e) => e.node && (e.node.imageMessage || e.node.videoMessage || e.node.audioMessage));
+    const inner = usableEntry?.node || anyMediaEntry?.node;
     if (!inner) {
       return { ok: false, error: 'Reply directly to the view-once photo/video/voice, then ask: open view once / send to my dm.' };
+    }
+    if (!usableMedia(inner)) {
+      const d = ctx.voDebug;
+      const diag = d ? ` [ref:${d.id} exact:${d.exact} stored:${d.stored} usable:${d.usable}]` : '';
+      return { ok: false, error: 'That view-once has no recoverable media key. If Nick restarted after it arrived, ask the sender to send it again and reply with vv.' + diag };
     }
 
     const img = inner.imageMessage;
@@ -7006,8 +7039,9 @@ async function toolUnlockViewOnce(args, ctx) {
     }
 
     // Key MUST identify the original view-once message (stanzaId + participant)
-    const quotedParticipant = ctxInfo.participant || ctxInfo.participantPn || ctx.quotedParticipant || undefined;
-    const quotedId = ctxInfo.stanzaId || ctx.quotedStanzaId || 'vo';
+    const storedVoKey = usableEntry?.key || anyMediaEntry?.key || null;
+    const quotedParticipant = ctxInfo.participant || ctxInfo.participantPn || ctx.quotedParticipant || storedVoKey?.participant || undefined;
+    const quotedId = ctxInfo.stanzaId || ctx.quotedStanzaId || storedVoKey?.id || 'vo';
     const mediaContent = img ? { imageMessage: img } : vid ? { videoMessage: vid } : { audioMessage: aud };
     const mediaType = img ? 'image' : vid ? 'video' : 'audio';
     const mediaNode = img || vid || aud;
@@ -7036,6 +7070,8 @@ async function toolUnlockViewOnce(args, ctx) {
       else keyVariants.push(keyFor(fromMe, false));
     }
     if (quotedParticipant) keyVariants.push(keyFor(quotedFromMe, false));
+    // The stored original carries the authoritative key; try it first for reuploads.
+    if (storedVoKey?.id) keyVariants.unshift({ ...storedVoKey, remoteJid: ctx.chatId });
 
     async function streamToBuffer(stream) {
       const chunks = [];
@@ -7052,51 +7088,76 @@ async function toolUnlockViewOnce(args, ctx) {
       return Promise.race([promise, timeout]).finally(() => clearTimeout(timer));
     }
 
-    async function tryDownload(key, message) {
-      // 1) Baileys normal path (uses url/directPath already on the payload).
-      try {
-        const b = await downloadMediaMessage({ key, message }, 'buffer', {},
-          { logger: require('../logger') });
-        if (Buffer.isBuffer(b) && b.length > 10) return b;
-      } catch (e) { /* fall through */ }
+    // WhatsApp strips `url` from quoted view-once media. Baileys then rejects it as
+    // `"imageMessage" message is not a media message` because it checks for a url
+    // field. Rebuild the URL from directPath so its normal download path can run.
+    const { getUrlFromDirectPath } = require('@lordeagle21/baileys');
+    const mediaKeyName = img ? 'imageMessage' : vid ? 'videoMessage' : 'audioMessage';
+    const enrichedMedia = { ...mediaNode };
+    if (!enrichedMedia.url && enrichedMedia.directPath) {
+      try { enrichedMedia.url = getUrlFromDirectPath(enrichedMedia.directPath); } catch {}
+    }
+    const enrichedContent = { [mediaKeyName]: enrichedMedia };
 
-      // 2) Quoted view-once payloads often omit `url` while still having
-      //    mediaKey + directPath. Baileys' downloadMediaMessage rejects those with
-      //    `"imageMessage" message is not a media message`, so stream them directly.
-      if (mediaNode?.mediaKey && (mediaNode?.directPath || mediaNode?.url)) {
+    const downloadWithBaileys = async (key, payload) => {
+      const b = await downloadMediaMessage({ key, message: payload }, 'buffer', {},
+        { logger: require('../logger') });
+      return Buffer.isBuffer(b) && b.length > 10 ? b : null;
+    };
+
+    async function tryDownload(key) {
+      const errors = [];
+
+      // 1) Normal Baileys path — enriched payload first, then the original.
+      for (const payload of [enrichedContent, mediaContent]) {
         try {
-          const stream = await downloadContentFromMessage(mediaNode, mediaType);
-          const b = await streamToBuffer(stream);
-          if (Buffer.isBuffer(b) && b.length > 10) return b;
-        } catch (e) { /* fall through */ }
+          const b = await downloadWithBaileys(key, payload);
+          if (b) return { buffer: b, errors };
+        } catch (e) { errors.push(e?.message || String(e)); }
       }
 
-      // 3) Ask the sender's device to re-upload and supply a fresh url. This can
-      //    wait for the other device, so cap it and never hang the command.
+      // 2) Direct encrypted download. Bypasses Baileys' url validation entirely.
+      for (const node of [enrichedMedia, mediaNode]) {
+        if (!node?.mediaKey || (!node.directPath && !node.url)) continue;
+        for (const host of [undefined, 'mmg.whatsapp.net', 'media.whatsapp.net']) {
+          try {
+            const stream = await downloadContentFromMessage(node, mediaType, host ? { host } : {});
+            const b = await streamToBuffer(stream);
+            if (Buffer.isBuffer(b) && b.length > 10) return { buffer: b, errors };
+          } catch (e) { errors.push(e?.message || String(e)); }
+        }
+      }
+
+      // 3) Ask the sender's device to re-upload with a fresh url. Capped so the
+      //    command can never hang waiting on an offline device.
       if (quotedId !== 'vo' && typeof ctx.sock?.updateMediaMessage === 'function') {
         try {
-          const updated = await withTimeout(ctx.sock.updateMediaMessage({ key, message }), 8000);
-          if (Buffer.isBuffer(updated) && updated.length > 10) return updated;
-          const b = await downloadMediaMessage(
-            { key, message: updated?.message || message }, 'buffer', {},
-            { logger: require('../logger') }
-          );
-          if (Buffer.isBuffer(b) && b.length > 10) return b;
-        } catch (e) { /* fall through */ }
+          const updated = await withTimeout(ctx.sock.updateMediaMessage({ key, message: mediaContent }), 8000);
+          if (Buffer.isBuffer(updated) && updated.length > 10) return { buffer: updated, errors };
+          for (const payload of [updated?.message || mediaContent, enrichedContent]) {
+            try {
+              const b = await downloadWithBaileys(key, payload);
+              if (b) return { buffer: b, errors };
+            } catch (e) { errors.push(e?.message || String(e)); }
+          }
+        } catch (e) { errors.push(e?.message || String(e)); }
       }
-      return null;
+      return { buffer: null, errors };
     }
 
     let buf = null;
-    let lastErr = null;
+    const allErrors = [];
     for (const key of keyVariants) {
+      let result;
       try {
-        buf = await tryDownload(key, mediaContent);
-      } catch (e) { lastErr = e; }
-      if (buf) break;
+        result = await tryDownload(key);
+      } catch (e) { allErrors.push(e?.message || String(e)); continue; }
+      allErrors.push(...(result?.errors || []));
+      if (result?.buffer) { buf = result.buffer; break; }
     }
     if (!buf) {
-      const why = lastErr?.message || 'the media is no longer available';
+      const why = [...new Set(allErrors)].filter(Boolean).slice(0, 2).join('; ')
+        || 'the media is no longer available';
       return { ok: false, error: `Could not download that view-once (${why}). It may be expired or already opened.` };
     }
 
@@ -7562,9 +7623,11 @@ async function toolSearchMusic(args, ctx) {
 
 async function toolSendVoiceNote(args, ctx) {
   try {
-    const text = String(args?.text || '').trim();
+    let text = String(args?.text || '').trim();
+    // Never speak raw @mention tokens or phone numbers — TTS would read every digit aloud.
+    text = text.replace(/@\+?\d{6,}\b/g, '').replace(/\+?\d{7,}\b/g, '').replace(/\s{2,}/g, ' ').trim();
     if (!text) {
-      return { ok: false, error: 'No text provided for the voice note. Ask the user what to say, then call again with text.' };
+      return { ok: false, error: 'No speakable text provided for the voice note (mentions/phone numbers are not spoken). Ask the user what to say, then call again with text.' };
     }
     // speak() returns Opus OGG already (young female Jenny + ffmpeg)
     const speech = await tts.speak(text, {

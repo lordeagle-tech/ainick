@@ -259,6 +259,15 @@ const config = {
         // Never wake on generic AI words — only Nick's brand name (and BOT_NAMES overrides)
         .filter((n) => !['ai', 'bot', 'agent', 'agnes', 'gpt', 'chatgpt', 'claude', 'gemini'].includes(n))
     )].sort((a, b) => b.length - a.length),
+    // Other automated accounts in groups. Their messages often tag Nick and another
+    // member, which must not be mistaken for a real call.
+    ignoredBotIds: [...new Set([
+      ...list(process.env.IGNORED_BOT_IDS),
+      '265726069833797', // Alice AI
+      '249525319012580', // level/XP bot LID
+      '254111783552',    // level/XP bot PN
+      '233646741057776', // EVILGPT bot
+    ].map(String))],
   },
   economy: {
     currencyName: process.env.ECONOMY_CURRENCY_NAME || 'coins',
@@ -284,6 +293,9 @@ const config = {
   },
   stickers: {
     replyToStickerChance: Number(process.env.STICKER_REPLY_CHANCE ?? 0.25), // chance to randomly react to an ordinary group sticker
+    // How quickly Nick can answer the next sticker in a back-and-forth battle.
+    // Short enough to keep a real conversation going, long enough to stop bot loops.
+    battleCooldownMs: Number(process.env.STICKER_BATTLE_COOLDOWN_MS ?? 1500),
     randomDropChance: Number(process.env.STICKER_RANDOM_DROP_CHANCE ?? 0.03), // chance per message to randomly drop a sticker
     minSavedForRandomDrop: Number(process.env.STICKER_MIN_FOR_RANDOM_DROP ?? 3),
   },

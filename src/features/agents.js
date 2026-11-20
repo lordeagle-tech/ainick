@@ -1467,10 +1467,10 @@ function observeFeedback(userId, message) {
   const t = String(message || '').toLowerCase();
   const data = get(userId);
   if (/\b(good|perfect|nice|thanks|thank you|correct|exactly|love it)\b/.test(t)) {
-    data.facts = bumpList(data.facts || [], 'User often approves short direct answers', MAX_FACTS);
+    data.facts = bumpList(data.facts || [], 'Likes concise direct answers for simple factual questions — still match their mood when they are vibing', MAX_FACTS);
   }
   if (/\b(wack|wrong|bad|no|not that|try again|fix it|useless)\b/.test(t)) {
-    data.facts = bumpList(data.facts || [], 'User rejects vague answers — be precise and use tools', MAX_FACTS);
+    data.facts = bumpList(data.facts || [], 'Dislikes vague answers — be precise and use tools when relevant', MAX_FACTS);
   }
   save(userId, data);
   return data;
@@ -1483,24 +1483,41 @@ function promptBlock(userId) {
   const data = get(userId);
   if (!data || !(data.style?.samples > 2)) return '';
 
-  const lines = ['Learned about this user (from past chats — adapt, do not recite raw):'];
+  const lines = ['Learned about this user (style hints only — adapt to the current conversation, never treat these as limits on tone, affection, roleplay, or reply length):'];
   const s = data.style;
   const n = s.samples || 1;
-  if (s.avgLen && s.avgLen < 40) lines.push('- Prefers short replies.');
-  if (s.avgLen && s.avgLen > 120) lines.push('- Often writes longer messages — can handle detailed answers.');
+  if (s.avgLen && s.avgLen < 40) lines.push('- Often sends short messages; match their energy, but do not force every reply to be short.');
+  if (s.avgLen && s.avgLen > 120) lines.push('- Often writes longer messages; still answer as briefly as possible unless detail is explicitly requested.');
   if ((s.casual || 0) / n > 0.35) lines.push('- Casual tone; match slang lightly, stay useful.');
-  if ((s.emojiHeavy || 0) / n > 0.25) lines.push('- Comfortable with emojis; use sparingly.');
+  if ((s.emojiHeavy || 0) / n > 0.25) lines.push('- Comfortable with emojis; match the mood instead of rationing them.');
   if (data.language === 'pidgin-casual') lines.push('- Often uses Nigerian Pidgin / casual EN — understand it; reply clearly.');
   if (data.language && data.language !== 'en' && data.language !== 'pidgin-casual') {
     lines.push(`- Language lean: ${data.language}.`);
   }
   const topLikes = (data.likes || []).slice(0, 4).map((x) => x.text);
   if (topLikes.length) lines.push(`- Often asks about: ${topLikes.join(', ')}.`);
-  const topFacts = (data.facts || []).slice(0, 6).map((x) => x.text);
+  const soften = (text) => String(text)
+    .replace(/^User often approves short direct answers$/i, 'Likes concise direct answers for simple factual questions — still match the mood when vibing')
+    .replace(/^User rejects vague answers — be precise and use tools$/i, 'Dislikes vague answers — be precise and use tools when relevant');
+  const topFacts = (data.facts || []).slice(0, 6).map((x) => soften(x.text));
   for (const f of topFacts) lines.push(`- ${f}`);
 
   if (lines.length <= 1) return '';
   return '\n\n' + lines.join('\n');
+}
+
+function clear(userId) {
+  const id = String(userId || '').replace(/\D/g, '') || String(userId || '');
+  if (!id) return false;
+  if (!store.has(id)) return false;
+  store.delete(id);
+  return true;
+}
+
+function clearAll() {
+  const count = Object.keys(store.all()).length;
+  for (const key of Object.keys(store.all())) store.delete(key);
+  return count;
 }
 
 module.exports = {
@@ -1509,6 +1526,8 @@ module.exports = {
   promptBlock,
   get,
   save,
+  clear,
+  clearAll,
 };
 
 });

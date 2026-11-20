@@ -12,6 +12,8 @@ const stickerCommands = require('./stickerCommands');
 const githubCommands = require('./githubCommands');
 const fileCommands = require('./fileCommands');
 const ownerDiagnostics = require('./ownerDiagnostics');
+const getPlugin = require('./getPlugin');
+const qualityOfLife = require('./qualityOfLife');
 
 function isExplicitCommand(text) {
   const command = commandPrefix.parseCommand(text).text.trim();
@@ -30,6 +32,8 @@ function isExplicitCommand(text) {
     || githubCommands.isCommand(text)
     || keithApis.isCommand(text)
     || fileCommands.isCommand(text)
+    || getPlugin.isCommand(text)
+    || qualityOfLife.isCommand(text)
     || ownerDiagnostics.isCommand(text)
     || groupControl.isGroupPluginCommand(text)
     || groupCommands.isCommand(text)
@@ -51,8 +55,12 @@ async function route(ctx, text) {
   if (keith.handled) return keith;
   const files = await fileCommands.route(ctx, text);
   if (files.handled) return files;
+  const pluginFile = await getPlugin.route(ctx, text);
+  if (pluginFile.handled) return pluginFile;
   const diagnostics = await ownerDiagnostics.route(ctx, text);
   if (diagnostics.handled) return diagnostics;
+  const extras = await qualityOfLife.route(ctx, text);
+  if (extras.handled) return extras;
   const groups = await groupCommands.route(ctx, text);
   if (groups.handled) return groups;
   const owner = await ownerCommands.route(ctx, text);
@@ -69,6 +77,8 @@ async function handleMedia(ctx, text, imageBuffer, videoBuffer) {
   if (groups.handled) return groups;
   const owner = await ownerCommands.handleMedia(ctx, text, imageBuffer);
   if (owner.handled) return owner;
+  const extras = await qualityOfLife.handleMedia(ctx, text, imageBuffer);
+  if (extras.handled) return extras;
   return groupControl.handleMedia(ctx, text, imageBuffer);
 }
 
@@ -79,8 +89,9 @@ function getMenuSections() {
     { title: '𝐌𝐔𝐒𝐈𝐂 & 𝐌𝐄𝐃𝐈𝐀', commands: [...musicCommands.menuCommands, ...stickerCommands.menuCommands] },
     { title: '𝐆𝐈𝐓𝐇𝐔𝐁', commands: githubCommands.menuCommands },
     { title: 'API Commands', commands: keithApis.menuCommands },
+    { title: '𝐄𝐗𝐓𝐑𝐀𝐒', commands: qualityOfLife.menuCommands },
     { title: '𝐆𝐑𝐎𝐔𝐏 𝐂𝐎𝐌𝐌𝐀𝐍𝐃𝐒', commands: [...groupControl.menuCommands, ...groupCommands.menuCommands] },
-    { title: 'Owner Only', commands: [...ownerCommands.menuCommands, ...fileCommands.menuCommands, ...ownerDiagnostics.menuCommands] },
+    { title: 'Owner Only', commands: [...ownerCommands.menuCommands, ...fileCommands.menuCommands, ...getPlugin.menuCommands, ...ownerDiagnostics.menuCommands] },
   ].map(({ title, commands }) => ({
     title,
     commands: [...new Set((commands || []).map((name) => String(name).trim()).filter(Boolean))],
@@ -95,6 +106,7 @@ module.exports = {
   parseCommand: commandPrefix.parseCommand,
   getPrefix: commandPrefix.getPrefix,
   isSetProfilePictureCommand: ownerCommands.isSetProfilePictureCommand,
+  isStickerBattleEnabled: qualityOfLife.isStickerBattleEnabled,
   isDeferredMediaCommand(text) {
     return checkerTools.isNsfwCommand(text)
       || ownerCommands.isSetProfilePictureCommand(text)

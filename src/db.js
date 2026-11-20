@@ -108,4 +108,15 @@ function flushAllSync() {
   dirty.clear();
 }
 
-module.exports = { Collection, flushAllSync };
+/** Replace an entire collection in memory and on disk. Used by owner restore tools. */
+function setAll(name, data) {
+  cache.set(name, data && typeof data === 'object' ? data : {});
+  markDirty(name);
+  return cache.get(name);
+}
+
+function getAll(name, fallback = {}) {
+  return load(name, fallback);
+}
+
+module.exports = { Collection, flushAllSync, setAll, getAll };

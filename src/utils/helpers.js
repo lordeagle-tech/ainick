@@ -5,6 +5,15 @@ function numFromJid(jid) {
   return String(jid || '').split('@')[0].split(':')[0];
 }
 
+/** Normalize arrays, Sets, single values, and null into an array. */
+function toArray(value) {
+  if (value == null) return [];
+  if (Array.isArray(value)) return value;
+  if (typeof value === 'string') return [value];
+  if (typeof value[Symbol.iterator] === 'function') return [...value];
+  return [value];
+}
+
 function isGroupJid(jid) {
   return String(jid || '').endsWith('@g.us');
 }
@@ -187,6 +196,7 @@ function timeAgo(ms) {
 
 module.exports = {
   numFromJid,
+  toArray,
   isGroupJid,
   containsLink,
   containsGroupInviteLink,

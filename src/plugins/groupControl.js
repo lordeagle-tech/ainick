@@ -4,7 +4,7 @@ const groupAdmin = require('../features').groupAdmin;
 const moderation = require('../features').moderation;
 const permissions = require('../utils/permissions');
 const roles = require('../features').roles;
-const { numFromJid } = require('../utils/helpers');
+const { numFromJid, toArray } = require('../utils/helpers');
 const commandPrefix = require('./commandPrefix');
 const messageLayout = require('../utils/messageLayout');
 
@@ -61,8 +61,18 @@ function isGroupAdmin(ctx) {
     || permissions.isGroupAdmin(ctx.senderJid, ctx.groupMeta, ctx.senderAliases || []);
 }
 
+function getBotIds(ctx) {
+  // Bot identities arrive as an array from the router, but older callers and
+  // jidResolver.selfIds() may supply a Set. Normalize before using array methods.
+  return [...new Set([
+    ...toArray(ctx.botJids),
+    ctx.sock?.user?.id,
+    ctx.sock?.user?.lid,
+  ].filter(Boolean).map(String))];
+}
+
 function isBotAdmin(ctx) {
-  const ids = ctx.botJids || [ctx.sock?.user?.id, ctx.sock?.user?.lid].filter(Boolean);
+  const ids = getBotIds(ctx);
   return permissions.botIsGroupAdmin(ids[0], ctx.groupMeta, ids);
 }
 
@@ -84,7 +94,7 @@ function findTarget(ctx) {
   const targetJid = participant.id || participant.jid || participant.phoneNumber || participant.lid;
   if (!targetJid) return { error: 'Could not resolve the group member.' };
   if (roles.isOwner(targetIds)) return { error: 'I will not target a configured bot owner.' };
-  const botIds = ctx.botJids || [];
+  const botIds = getBotIds(ctx);
   if (botIds.some((id) => targetIds.includes(String(id)))) return { error: 'I will not target my own group account.' };
   return { participant, targetJid };
 }

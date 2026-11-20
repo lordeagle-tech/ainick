@@ -1003,6 +1003,26 @@ class AIClient {
     return text;
   }
 
+  /** One-shot vision completion. No tools, no history — used by OCR/explicit image reads. */
+  async simpleVision({ dataUri, prompt, system, signal } = {}) {
+    if (!dataUri || !/^data:image\//i.test(String(dataUri))) {
+      throw new Error('simpleVision needs an image data URI');
+    }
+    const messages = [];
+    if (system) messages.push({ role: 'system', content: system });
+    messages.push({
+      role: 'user',
+      content: [
+        { type: 'text', text: prompt || 'Read this image.' },
+        { type: 'image_url', image_url: { url: String(dataUri) } },
+      ],
+    });
+    const msg = await this._completion(messages, [], signal);
+    const text = sanitizeOutbound(msg?.content) || '';
+    if (!text.trim()) throw new Error('vision model returned blank text');
+    return text;
+  }
+
   /** Force a specific provider by name (sub-agents: agentrouter / gemini / groq / agnes). */
   async simpleCompleteOn(providerName, prompt, system, opts = {}) {
     const name = String(providerName || '').toLowerCase();

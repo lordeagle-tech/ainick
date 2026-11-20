@@ -1,7 +1,7 @@
 // Pterodactyl-friendly supervisor: restart owner requests cleanly and retry crashes with exponential backoff.
 (() => {
-  const noisy = /^(Closing session:|Removing old closed session:)/;
-  for (const method of ['info', 'log', 'warn']) {
+  const noisy = /^(Closing session:|Removing old closed session:|Closing open session in favor of incoming prekey bundle$|Decrypted message with closed session\.|Failed to decrypt message with any known session|Session error:)/;
+  for (const method of ['info', 'log', 'warn', 'error']) {
     const original = console[method];
     if (typeof original !== 'function') continue;
     console[method] = (...args) => {

@@ -401,4 +401,18 @@ async function connect(onSocket) {
   }
 }
 
-module.exports = { connect, rememberMessage, archiveDeadSession };
+function getRememberedMessage(id) {
+  if (!id) return undefined;
+  return msgStore.get(String(id));
+}
+
+function getRememberedMessages(chatId) {
+  const out = [];
+  for (const msg of msgStore.values()) {
+    if (chatId && String(msg?.key?.remoteJid || '') !== String(chatId)) continue;
+    out.push(msg);
+  }
+  return out.sort((a, b) => Number(b?.messageTimestamp || 0) - Number(a?.messageTimestamp || 0));
+}
+
+module.exports = { connect, rememberMessage, getRememberedMessage, getRememberedMessages, archiveDeadSession };

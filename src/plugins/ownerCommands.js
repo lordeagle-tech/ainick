@@ -2,7 +2,7 @@
 
 const roles = require('../features').roles;
 const commandPrefix = require('./commandPrefix');
-const { numFromJid } = require('../utils/helpers');
+const { numFromJid, toArray } = require('../utils/helpers');
 const messageLayout = require('../utils/messageLayout');
 
 function isOwnerPluginCommand(input) {
@@ -168,7 +168,7 @@ async function handleMedia(ctx, input, imageBuffer) {
   if (!Buffer.isBuffer(imageBuffer) || !imageBuffer.length) {
     return { handled: true, text: 'I could not find a photo. Send or reply to an image with `setpp`.' };
   }
-  const ids = [...(ctx.botJids || []), ctx.sock?.user?.id, ctx.sock?.user?.lid].filter(Boolean).map(String);
+  const ids = [...toArray(ctx.botJids), ctx.sock?.user?.id, ctx.sock?.user?.lid].filter(Boolean).map(String);
   const botJid = ids.find((id) => /@s\.whatsapp\.net$/i.test(id)) || ids.find((id) => /@c\.us$/i.test(id)) || null;
   if (!botJid) return { handled: true, text: 'Could not resolve Nick’s WhatsApp profile ID.' };
   try {

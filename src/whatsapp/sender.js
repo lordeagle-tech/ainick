@@ -184,8 +184,10 @@ function makeSender(sock) {
 
   async function sendSticker(jid, buffer, opts = {}) {
     try {
-      await sock.sendMessage(jid, { sticker: buffer }, opts.quoted ? { quoted: opts.quoted } : undefined);
-      return true;
+      // Return the real send result so callers can register the message key.
+      // Reply detection relies on that key to keep sticker battles going.
+      const sent = await sock.sendMessage(jid, { sticker: buffer }, opts.quoted ? { quoted: opts.quoted } : undefined);
+      return sent || true;
     } catch (e) {
       logger.warn({ err: e.message }, 'send sticker failed');
       return false;

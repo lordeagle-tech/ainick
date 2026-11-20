@@ -1,7 +1,10 @@
 // Suppress noisy libsignal session lifecycle logs that are printed via console.
 (() => {
-  const noisy = /^(Closing session:|Removing old closed session:|Closing open session in favor of incoming prekey bundle$|Decrypted message with closed session\.$)/;
-  for (const method of ['info', 'log', 'warn']) {
+  const noisy = /^(Closing session:|Removing old closed session:|Closing open session in favor of incoming prekey bundle$|Decrypted message with closed session\.|Failed to decrypt message with any known session|Session error:)/;
+  // libsignal logs every failed ratchet attempt via console.error; a single
+  // undecryptable backlog message can print dozens of identical "Bad MAC"
+  // stacks. These are handled internally by Baileys, so keep them out of stdout.
+  for (const method of ['info', 'log', 'warn', 'error']) {
     const original = console[method];
     if (typeof original !== 'function') continue;
     console[method] = (...args) => {
