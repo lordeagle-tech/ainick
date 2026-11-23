@@ -8,10 +8,10 @@ const API_TIMEOUT_MS = 15000;
 const MAX_RESPONSE_BYTES = 2 * 1024 * 1024;
 const menuCommands = [
   'keith api', 'keithapi', 'keithai', 'movie', 'news', 'football news', 'sports news',
-  'ytsearch', 'bible', 'random verse', 'fruit', 'translate', 'shorten', 'fancy',
+  'ytsearch', 'bible', 'biblesearch', 'random verse', 'fruit', 'translate', 'shorten', 'fancy',
   'truth', 'dare', 'quote', 'fact', 'wyr', 'would you rather',
 ];
-const COMMAND_PATTERN = /^(?:keith\s+api|keithapi|keithai\s+\S[\s\S]*|movie\s+\S[\s\S]*|ytsearch\s+\S[\s\S]*|(?:football|sports)\s+news|news(?:\s+\S[\s\S]*)?|bible(?:\s+search)?\s+\S[\s\S]*|random\s+verse|fruit\s+\S[\s\S]*|translate\s+(?:to\s+)?[a-z]{2,5}\s+\S[\s\S]*|shorten\s+\S[\s\S]*|fancy\s+\S[\s\S]*|truth|dare|quote|fact|wyr|would\s+you\s+rather)$/i;
+const COMMAND_PATTERN = /^(?:keith\s+api|keithapi|keithai\s+\S[\s\S]*|movie\s+\S[\s\S]*|ytsearch\s+\S[\s\S]*|(?:football|sports)\s+news|news(?:\s+\S[\s\S]*)?|bible(?:\s+search)?\s+\S[\s\S]*|biblesearch\s+\S[\s\S]*|random\s+verse|fruit\s+\S[\s\S]*|translate\s+(?:to\s+)?[a-z]{2,5}\s+\S[\s\S]*|shorten\s+\S[\s\S]*|fancy\s+\S[\s\S]*|truth|dare|quote|fact|wyr|would\s+you\s+rather)$/i;
 
 function isCommand(input) {
   return COMMAND_PATTERN.test(commandPrefix.parseCommand(input).text.trim());
@@ -140,7 +140,7 @@ async function handle(ctx, text) {
       '• `news [search terms]` — Kenyan headlines',
       '• `football news` — football headlines',
       '• `ytsearch <query>` — YouTube search',
-      '• `bible <query>` / `random verse`',
+      '• `bible <query>` / `biblesearch <query>` / `random verse`',
       '• `translate <language-code> <text>`',
       '• `shorten <http(s) URL>` / `fancy <text>`',
       '• `fruit <name>` / `keithai <prompt>`',
@@ -197,7 +197,7 @@ async function handle(ctx, text) {
     return formatYouTubeSearch(result);
   }
 
-  const bible = text.match(/^bible(?:\s+search)?\s+([\s\S]+)$/i);
+  const bible = text.match(/^(?:bible(?:\s+search)?|biblesearch)\s+([\s\S]+)$/i);
   if (bible) {
     const result = await requestJson('/bible/search', { q: bible[1].trim().slice(0, 160) });
     return formatBibleSearch(result);

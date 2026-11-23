@@ -11,6 +11,8 @@ const musicCommands = require('./musicCommands');
 const stickerCommands = require('./stickerCommands');
 const githubCommands = require('./githubCommands');
 const networkCommands = require('./networkCommands');
+const utilityLookupCommands = require('./utilityLookupCommands');
+const mediaFunCommands = require('./mediaFunCommands');
 const fileCommands = require('./fileCommands');
 const ownerDiagnostics = require('./ownerDiagnostics');
 const getPlugin = require('./getPlugin');
@@ -32,6 +34,8 @@ function isExplicitCommand(text) {
     || musicCommands.isCommand(text)
     || githubCommands.isCommand(text)
     || networkCommands.isCommand(text)
+    || utilityLookupCommands.isCommand(text)
+    || mediaFunCommands.isCommand(text)
     || keithApis.isCommand(text)
     || fileCommands.isCommand(text)
     || getPlugin.isCommand(text)
@@ -55,6 +59,10 @@ async function route(ctx, text) {
   if (github.handled) return github;
   const network = await networkCommands.route(ctx, text);
   if (network.handled) return network;
+  const lookup = await utilityLookupCommands.route(ctx, text);
+  if (lookup.handled) return lookup;
+  const mediaFun = await mediaFunCommands.route(ctx, text);
+  if (mediaFun.handled) return mediaFun;
   const keith = await keithApis.route(ctx, text);
   if (keith.handled) return keith;
   const files = await fileCommands.route(ctx, text);
@@ -72,9 +80,11 @@ async function route(ctx, text) {
   return groupControl.route(ctx, text);
 }
 
-async function handleMedia(ctx, text, imageBuffer, videoBuffer) {
+async function handleMedia(ctx, text, imageBuffer, videoBuffer, audioBuffer, audioMime) {
   const sticker = await stickerCommands.handleMedia(ctx, text, imageBuffer, videoBuffer);
   if (sticker.handled) return sticker;
+  const mediaFun = await mediaFunCommands.handleMedia(ctx, text, imageBuffer, videoBuffer, audioBuffer, audioMime);
+  if (mediaFun.handled) return mediaFun;
   const checker = await checkerTools.handleMedia(ctx, text, imageBuffer);
   if (checker.handled) return checker;
   const groups = await groupCommands.handleMedia(ctx, text, imageBuffer);
@@ -93,8 +103,11 @@ function getMenuSections() {
     { title: '𝐌𝐔𝐒𝐈𝐂 & 𝐌𝐄𝐃𝐈𝐀', commands: [...musicCommands.menuCommands, ...stickerCommands.menuCommands] },
     { title: '𝐆𝐈𝐓𝐇𝐔𝐁', commands: githubCommands.menuCommands },
     { title: '𝐂𝐋𝐎𝐍𝐄 (PUBLIC)', commands: githubCommands.publicMenuCommands },
+    { title: '𝐆𝐈𝐓𝐇𝐔𝐁 (PUBLIC LOOKUP)', commands: utilityLookupCommands.publicGithubMenuCommands },
     { title: '𝐍𝐄𝐓𝐖𝐎𝐑𝐊 (PUBLIC)', commands: networkCommands.publicMenuCommands },
+    { title: '𝐔𝐓𝐈𝐋𝐈𝐓𝐘 𝐋𝐎𝐎𝐊𝐔𝐏', commands: utilityLookupCommands.menuCommands },
     { title: 'API Commands', commands: keithApis.menuCommands },
+    { title: '𝐌𝐄𝐃𝐈𝐀 & 𝐅𝐔𝐍', commands: mediaFunCommands.menuCommands },
     { title: '𝐄𝐗𝐓𝐑𝐀𝐒', commands: qualityOfLife.menuCommands },
     { title: '𝐆𝐑𝐎𝐔𝐏 𝐂𝐎𝐌𝐌𝐀𝐍𝐃𝐒', commands: [...groupControl.menuCommands, ...groupCommands.menuCommands] },
     { title: 'Owner Only', commands: [...ownerCommands.menuCommands, ...fileCommands.menuCommands, ...getPlugin.menuCommands, ...ownerDiagnostics.menuCommands, ...networkCommands.ownerMenuCommands] },
@@ -115,6 +128,7 @@ module.exports = {
   isStickerBattleEnabled: qualityOfLife.isStickerBattleEnabled,
   isDeferredMediaCommand(text) {
     return checkerTools.isNsfwCommand(text)
+      || mediaFunCommands.isDeferredMediaCommand(text)
       || ownerCommands.isSetProfilePictureCommand(text)
       || groupCommands.isGroupPictureCommand(text)
       || groupControl.isGroupPictureCommand(text);

@@ -1765,6 +1765,7 @@ if (/^(self[- ]?fix|fix yourself|health check)$/i.test(rawText) && perms.isOwner
     let quotedVideoBuffer = null;
     let quotedStickerBuffer = null;
     let quotedImageBuffer = null;
+    let quotedAudioBuffer = null;
 
     async function attachMedia(srcMsg, msgType, mediaMsg, asQuoted = false) {
       try {
@@ -1796,6 +1797,7 @@ if (/^(self[- ]?fix|fix yourself|health check)$/i.test(rawText) && perms.isOwner
           const mime = mediaMsg.mimetype || 'audio/ogg; codecs=opus';
           audioBuffer = buffer;
           audioMime = mime;
+          if (asQuoted) quotedAudioBuffer = buffer;
           mediaContent = { type: 'input_audio', input_audio: { data: buffer.toString('base64'), format: mime.includes('mp4') ? 'm4a' : mime.includes('mpeg') ? 'mp3' : 'ogg' } };
         } else if (msgType === 'documentMessage') {
           const fileName = mediaMsg.fileName || 'file';
@@ -1838,7 +1840,15 @@ if (/^(self[- ]?fix|fix yourself|health check)$/i.test(rawText) && perms.isOwner
 
     const commandImageBuffer = curMediaType === 'videoMessage' ? null : imageBuffer || quotedImageBuffer;
     const commandVideoBuffer = curMediaType === 'imageMessage' ? null : videoBuffer || quotedVideoBuffer;
-    const mediaPluginResult = await commandPlugins.handleMedia(pluginContext, cleanText.trim(), commandImageBuffer, commandVideoBuffer);
+    const commandAudioBuffer = curMediaType === 'videoMessage' ? null : audioBuffer || quotedAudioBuffer;
+    const mediaPluginResult = await commandPlugins.handleMedia(
+      pluginContext,
+      cleanText.trim(),
+      commandImageBuffer,
+      commandVideoBuffer,
+      commandAudioBuffer,
+      audioMime
+    );
     if (mediaPluginResult.handled) {
       if (mediaPluginResult.stickerBuffer) {
         try {
