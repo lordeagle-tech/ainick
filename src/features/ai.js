@@ -373,7 +373,7 @@ async function downloadSpotifyTrack(queryOrUrl, internetTools) {
   };
 }
 
-module.exports = { searchSong, playSong, getLyrics, searchLyrics, searchMusic, generic, downloadSongAudio, downloadSpotifyTrack, compressAudioForWhatsApp };
+module.exports = { searchSong, resolveSongUrl, playSong, getLyrics, searchLyrics, searchMusic, generic, downloadSongAudio, downloadSpotifyTrack, compressAudioForWhatsApp };
 
 
 /**

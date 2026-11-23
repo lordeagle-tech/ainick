@@ -18,7 +18,6 @@ module.exports = Object.freeze({
   telegramStickers: require('../features').telegramStickers,
   funExtras: require('../features').funExtras,
   siteRunner: require('../features').siteRunner,
-  dailyReport: require('../features').dailyReport,
   genQuota: require('../features').genQuota,
   zipMemory: require('../features').zipMemory,
   ownerCleanup: require('../features').ownerCleanup,

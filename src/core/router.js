@@ -43,7 +43,7 @@ async function sendOwnerProgress(sock, text, fallbackJid, isGroup, senderJid) {
     }
   } catch {}
 }
-const { economy, stickers, afk, autoreply, daemons, autoPresence, darkAgent, roles, funFeed, usageTracker, partyExtras, spamScore, scheduledBroadcast, stickerPack, telegramStickers, funExtras, siteRunner, dailyReport, genQuota, zipMemory, ownerCleanup, selfheal, deletehandler, leveling, customCommands, obsidian, commandPlugins, names, fixer, tts, messageTracker, training, subagents } = require('./registry');
+const { economy, stickers, afk, autoreply, daemons, autoPresence, darkAgent, roles, funFeed, usageTracker, partyExtras, spamScore, scheduledBroadcast, stickerPack, telegramStickers, funExtras, siteRunner, genQuota, zipMemory, ownerCleanup, selfheal, deletehandler, leveling, customCommands, obsidian, commandPlugins, names, fixer, tts, messageTracker, training, subagents } = require('./registry');
 const { Collection, flushAllSync } = require('../db');
 const { numFromJid, toArray, isGroupJid, fmtCurrency, isGroupStatusMentionMessage, isGroupStatusPost, looksLikeStatusPromo, phonesFromMessageType, timeAgo } = require('../utils/helpers');
 const jidResolver = require('../utils/jidResolver');
@@ -491,7 +491,7 @@ async function handleIncoming(msg) {
     let processingReactionPromise = null;
     let processingReactionSent = false;
     try {
-    try { if (!handleIncoming._bc) { scheduledBroadcast.start(sock); dailyReport.start(sock); handleIncoming._bc = true; } } catch {}
+    try { if (!handleIncoming._bc) { scheduledBroadcast.start(sock); handleIncoming._bc = true; } } catch {}
 
     const jid = msg.key.remoteJid;
     if (!jid) return;
@@ -501,11 +501,6 @@ async function handleIncoming(msg) {
     if (jid === 'status@broadcast' || jid.endsWith('@broadcast')) return;
     if (String(jid).endsWith('@newsletter')) return; // channels/newsletters are not group chats for the AI
     process._msgCount = (process._msgCount || 0) + 1;
-    try {
-      dailyReport.bump('messages');
-      if (String(msg.key.remoteJid || '').endsWith('@g.us')) dailyReport.bump('groups');
-      else dailyReport.bump('dms');
-    } catch {}
     
     const isGroup = isGroupJid(jid);
     // For messages the session account sent itself (fromMe — normal typed messages,
@@ -1977,10 +1972,6 @@ if (/^(self[- ]?fix|fix yourself|health check)$/i.test(rawText) && perms.isOwner
           if (rem.unlimited) return sendText(jid, '✨ Unlimited image/video gens (owner/sudo).');
           return sendText(jid, `🎨 Gen quota: ${rem.used}/${rem.limit} used in the last 6h · ${rem.left} left`);
         }
-        if (senderIsElevated && /^(daily\s*report|report\s*today)$/i.test(t)) {
-          return sendText(jid, dailyReport.formatReport());
-        }
-
         if (/\b(preview|run|screenshot|open)\b.*\b(site|website|zip|html)\b/i.test(t) || /^(preview|run)\s+(this\s+)?(site|zip|website)\b/i.test(t)) {
           if (!documentBuffer) return sendText(jid, 'Send a static website *zip* first, then ask me to preview/screenshot it.');
           try {
@@ -2769,7 +2760,6 @@ User language preference: ${userLang}. Reply in that language when reasonable.`)
       }
     } catch (e) {
       logger.error({ err: e.message, stack: e.stack }, 'router error');
-      try { dailyReport.bump('errors'); } catch {}
       const errMsg = String(e.message || '');
       const isTimeout = /timeout of \d+ms exceeded|ETIMEDOUT|ECONNABORTED/i.test(errMsg);
       const isEmpty = e.code === 'EMPTY_RESPONSE' || /empty response/i.test(errMsg);

@@ -100,7 +100,6 @@ const mediaDownloader = require('../features').mediaDownloader;
 const cryptoZip = optionalFeatures.cryptoZip;
 const siteRunner = require('../features').siteRunner;
 const genQuota = require('../features').genQuota;
-const dailyReport = require('../features').dailyReport;
 const funFeed = require('../features').funFeed;
 const zipMemory = require('../features').zipMemory;
 const ownerCleanup = require('../features').ownerCleanup;
@@ -4327,7 +4326,6 @@ async function toolGenerateImage(args, ctx) {
   const q = genQuota.consume(ctx.senderJid, 'image');
   if (!q.ok) return q;
   try {
-    try { dailyReport.bump('gens'); } catch {}
     // Prefer real http(s)/data URIs the model passed; never trust invented placeholders.
     let referenceImages = (args.referenceImages || []).filter((s) => /^https?:\/\//i.test(s) || /^data:image\//i.test(s));
     // Auto-attach the image from THIS turn (current or quoted).
@@ -4436,7 +4434,6 @@ async function toolGenerateVideo(args, ctx) {
   const q = genQuota.consume(ctx.senderJid, 'video');
   if (!q.ok) return q;
   try {
-    try { dailyReport.bump('gens'); } catch {}
     const seconds = Math.max(3, Math.min(12, Number(args.seconds) || 4));
     const frameRate = 24;
     let numFrames = Math.round(seconds * frameRate);
@@ -8033,8 +8030,6 @@ async function toolQwenVision(args, ctx) {
 async function toolQwenImage(args, ctx) {
   const q = genQuota.consume(ctx.senderJid, 'image');
   if (!q.ok) return q;
-  try { dailyReport.bump('gens'); } catch {}
-
   try {
     const data = await scrapers.qwenTextToImage(args.prompt);
     const source = data?.url || data?.image || data?.image_url || data?.result?.url || (data?.b64_json ? Buffer.from(data.b64_json, 'base64') : null);
