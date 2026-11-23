@@ -10,6 +10,7 @@ const serverTools = require('./serverTools');
 const musicCommands = require('./musicCommands');
 const stickerCommands = require('./stickerCommands');
 const githubCommands = require('./githubCommands');
+const networkCommands = require('./networkCommands');
 const fileCommands = require('./fileCommands');
 const ownerDiagnostics = require('./ownerDiagnostics');
 const getPlugin = require('./getPlugin');
@@ -30,6 +31,7 @@ function isExplicitCommand(text) {
     || serverTools.isCommand(text)
     || musicCommands.isCommand(text)
     || githubCommands.isCommand(text)
+    || networkCommands.isCommand(text)
     || keithApis.isCommand(text)
     || fileCommands.isCommand(text)
     || getPlugin.isCommand(text)
@@ -51,6 +53,8 @@ async function route(ctx, text) {
   if (sticker.handled) return sticker;
   const github = await githubCommands.route(ctx, text);
   if (github.handled) return github;
+  const network = await networkCommands.route(ctx, text);
+  if (network.handled) return network;
   const keith = await keithApis.route(ctx, text);
   if (keith.handled) return keith;
   const files = await fileCommands.route(ctx, text);
@@ -89,10 +93,11 @@ function getMenuSections() {
     { title: '𝐌𝐔𝐒𝐈𝐂 & 𝐌𝐄𝐃𝐈𝐀', commands: [...musicCommands.menuCommands, ...stickerCommands.menuCommands] },
     { title: '𝐆𝐈𝐓𝐇𝐔𝐁', commands: githubCommands.menuCommands },
     { title: '𝐂𝐋𝐎𝐍𝐄 (PUBLIC)', commands: githubCommands.publicMenuCommands },
+    { title: '𝐍𝐄𝐓𝐖𝐎𝐑𝐊 (PUBLIC)', commands: networkCommands.publicMenuCommands },
     { title: 'API Commands', commands: keithApis.menuCommands },
     { title: '𝐄𝐗𝐓𝐑𝐀𝐒', commands: qualityOfLife.menuCommands },
     { title: '𝐆𝐑𝐎𝐔𝐏 𝐂𝐎𝐌𝐌𝐀𝐍𝐃𝐒', commands: [...groupControl.menuCommands, ...groupCommands.menuCommands] },
-    { title: 'Owner Only', commands: [...ownerCommands.menuCommands, ...fileCommands.menuCommands, ...getPlugin.menuCommands, ...ownerDiagnostics.menuCommands] },
+    { title: 'Owner Only', commands: [...ownerCommands.menuCommands, ...fileCommands.menuCommands, ...getPlugin.menuCommands, ...ownerDiagnostics.menuCommands, ...networkCommands.ownerMenuCommands] },
   ].map(({ title, commands }) => ({
     title,
     commands: [...new Set((commands || []).map((name) => String(name).trim()).filter(Boolean))],
