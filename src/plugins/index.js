@@ -88,6 +88,7 @@ function getMenuSections() {
     { title: '𝐒𝐄𝐑𝐕𝐄𝐑 𝐈𝐍𝐅𝐎', commands: serverTools.menuCommands },
     { title: '𝐌𝐔𝐒𝐈𝐂 & 𝐌𝐄𝐃𝐈𝐀', commands: [...musicCommands.menuCommands, ...stickerCommands.menuCommands] },
     { title: '𝐆𝐈𝐓𝐇𝐔𝐁', commands: githubCommands.menuCommands },
+    { title: '𝐂𝐋𝐎𝐍𝐄 (PUBLIC)', commands: githubCommands.publicMenuCommands },
     { title: 'API Commands', commands: keithApis.menuCommands },
     { title: '𝐄𝐗𝐓𝐑𝐀𝐒', commands: qualityOfLife.menuCommands },
     { title: '𝐆𝐑𝐎𝐔𝐏 𝐂𝐎𝐌𝐌𝐀𝐍𝐃𝐒', commands: [...groupControl.menuCommands, ...groupCommands.menuCommands] },

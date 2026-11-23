@@ -340,7 +340,8 @@ async function handleStickerBattle(ctx, tail) {
 function helpMore() {
   return [
     '*More commands*',
-    '• `github` / `gitrepos` / `gitissues` — GitHub tools',
+    '• `github` / `gitrepos` / `gitissues` — GitHub tools (owner)',
+    '• `gitclone owner/repo` — clone a public GitHub repo (everyone)',
     '• `vpsinfo` / `botdiag` — server and bot diagnostics',
     '• `get command <name>` / `get plugin <file>` — source (owner)',
     '• `files` / `filemenu` — owner file tools',
