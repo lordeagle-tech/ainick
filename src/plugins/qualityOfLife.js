@@ -18,7 +18,7 @@ const menuCommands = [
   'check link', 'preview',
   'digest', 'digest now', 'digest on', 'digest off',
   'sticker battle', 'sticker battle on', 'sticker battle off', 'sticker battle score',
-  'vibe', 'vibe check', 'quote', 'quote of the day', 'roast', 'hype',
+  'quote', 'quote of the day', 'roast', 'hype',
   'ocr', 'read this',
 ];
 
@@ -235,19 +235,7 @@ const QUOTES = [
   'Protect your peace like it is a limited resource — because it is.',
 ];
 
-const VIBES = [
-  ['calm 🌙', 'Soft mode: clear head, low noise, steady hands.'],
-  ['hype 🔥', 'Loud mode: main-character energy, but make it useful.'],
-  ['focused 🎯', 'One thing at a time. Cut the extra noise.'],
-  ['playful 😏', 'Mischief is allowed, chaos is not required.'],
-  ['tender 🫶', 'Gentle words today. Be kind to yourself too.'],
-];
-
 function handleFun(ctx, name, tail) {
-  if (name === 'vibe' || (name === 'vibe' && tail.startsWith('check'))) {
-    const [label, line] = VIBES[Math.floor(Math.random() * VIBES.length)];
-    return { handled: true, text: `Today’s vibe: *${label.trim()}* — ${line}` };
-  }
   if (name === 'quote' || name === 'roast' || name === 'hype') {
     if (name === 'quote') {
       return { handled: true, text: `💬 ${QUOTES[Math.floor(Math.random() * QUOTES.length)]}` };
@@ -351,7 +339,7 @@ function helpMore() {
     '• `memory backup` / `memory backups` / `memory restore <id>`',
     '• `test call <message>` — owner dry-run of the call gate',
     '• `ocr` — reply to an image to extract visible text',
-    '• `vibe` / `quote` / `roast <name>` / `hype <name>`',
+    '• `quote` / `roast <name>` / `hype <name>`',
   ].join('\n');
 }
 
@@ -378,7 +366,7 @@ async function route(ctx, input) {
   if (name === 'sticker' && /^battle\b/i.test(tail)) {
     return handleStickerBattle(ctx, tail.replace(/^battle\s*/i, ''));
   }
-  if (['vibe', 'quote', 'roast', 'hype'].includes(name)) return handleFun(ctx, name, tail);
+  if (['quote', 'roast', 'hype'].includes(name)) return handleFun(ctx, name, tail);
   return { handled: false };
 }
 

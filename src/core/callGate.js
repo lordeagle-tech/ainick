@@ -24,6 +24,7 @@ function evaluateCallGate({
   config,
   stripBotAddress,
   botNameWordPattern,
+  botNamePattern,
   isCoreMenuCommand,
   numFromJid,
 }) {
@@ -33,6 +34,15 @@ function evaluateCallGate({
     mt.imageMessage?.contextInfo?.mentionedJid ||
     mt.videoMessage?.contextInfo?.mentionedJid ||
     [];
+  const msgContextInfo =
+    mt.extendedTextMessage?.contextInfo ||
+    mt.imageMessage?.contextInfo ||
+    mt.videoMessage?.contextInfo ||
+    mt.audioMessage?.contextInfo ||
+    mt.documentMessage?.contextInfo ||
+    mt.stickerMessage?.contextInfo ||
+    null;
+  const isForwarded = !!(msgContextInfo?.isForwarded || msgContextInfo?.forwardingScore);
 
   const mentionedBot = (Array.isArray(mentions) ? mentions : [])
     .some((m) => jidResolver.isSelfJid(m, sock));
@@ -57,10 +67,20 @@ function evaluateCallGate({
   })();
 
   const callText = rawText.normalize('NFKC').replace(/[\u200B-\u200D\uFEFF]/g, '').trim();
-  // Match Nick as a standalone name anywhere, but do not treat an @mention as a call.
+  // Match Nick as a call. In groups, single-word names (e.g. "nick") are common
+  // person names, so only accept them in leading/addressed form; multi-word names
+  // (e.g. "nick ai") can match anywhere. In DMs, allow anywhere.
   const namedBot = !!callText
-    && botNameList.some((name) => name && botNameWordPattern(name).test(callText));
+    && botNameList.some((name) => {
+      if (!name) return false;
+      const ambiguousInGroup = isGroup && !/\s/.test(String(name).trim());
+      const pattern = (ambiguousInGroup && botNamePattern) ? botNamePattern(name) : botNameWordPattern(name);
+      return pattern.test(callText);
+    });
   const cleanText = stripBotAddress(callText, botNameList);
+  // Forwarded messages often carry Nick's name in quoted/forwarded content and
+  // should not wake the bot in groups unless the user explicitly addressed Nick.
+  const forwardedNameWake = namedBot && !(isGroup && isForwarded);
 
   // A mass-tag broadcast (many @tags, no actual "nick" in the text) must not wake
   // Nick just because his LID happens to be in the recipient list.
@@ -84,7 +104,7 @@ function evaluateCallGate({
     || /^(?:help|menu|commands|normal menu|(?:\/|!)?(?:up|ping|ping2|uptime|alive|test))$/i.test(cleanText)
     || /^(?:\/|!)?(?:forget\s+me|clear\s+(?:all\s+)?(?:cached\s+)?memory|clear\s+(?:chat|this\s+chat'?s)\s+memory|clear\s+memory\s+(?:all|here)|reset\s+(?:the\s+)?(?:whole\s+|all\s+|bot\s+)?memory|resetmemory|wipe\s+(?:all\s+)?memory)$/i.test(cleanText)
     || /^(?:\/|!)?(?:autostatus(?:\s+view)?(?:\s+(?:on|off|enable|disable|status))?|autotyping(?:\s+(?:on|off|enable|disable|status))?)$/i.test(cleanText)
-    || /^(?:\/|!)?(?:help\s+more|test\s+call(?:\s+(?:dm|group))?\b|memory\s+(?:backups?|restore\b)|remember\b|recall(?:\s+all)?|forget\s+fact\b|check\s+link\b|preview\b|digest\b|sticker\s+battle\b|vibe(?:\s+check)?|quote(?:\s+of\s+the\s+day)?|roast\b|hype\b)/i.test(cleanText);
+    || /^(?:\/|!)?(?:help\s+more|test\s+call(?:\s+(?:dm|group))?\b|memory\s+(?:backups?|restore\b)|remember\b|recall(?:\s+all)?|forget\s+fact\b|check\s+link\b|preview\b|digest\b|sticker\s+battle\b|quote(?:\s+of\s+the\s+day)?|roast\b|hype\b)/i.test(cleanText);
   const viewOnceCommand = /^(?:[.!/])?(?:viewonce|view\s*once|reveal|open\s*once|vv)\b/i.test(cleanText || callText || rawText || '');
 
   const mentionCall = mentionedBot && (!isGroup || groupMentionCall);
@@ -109,7 +129,7 @@ function evaluateCallGate({
     && !(joinLike && !joinPayload)
     && !(leaveLike && !leaveValid);
 
-  const explicitCall = mentionCall || namedBot
+  const explicitCall = mentionCall || forwardedNameWake
     || quotedInvestigateCall
     || commandPlugins.parseCommand(cleanText).hadPrefix
     || builtInCommand
@@ -121,7 +141,7 @@ function evaluateCallGate({
   const isAddressed = isGroup
     ? (explicitCall || repliedToBot)
     : (explicitCall || (!!mt.stickerMessage && repliedToBot));
-  const isBareCall = !cleanText && (namedBot || mentionCall);
+  const isBareCall = !cleanText && (forwardedNameWake || mentionCall);
 
   // Other bots' messages often tag Nick plus another member, which would otherwise
   // pass the group mention gate and look like a genuine call.
@@ -145,9 +165,12 @@ function evaluateCallGate({
     suppressedBy.push('bot signature');
   }
   if (levelNoticeTagsSelf) suppressedBy.push('level/XP notice');
+  if (isGroup && isForwarded && namedBot && !mentionCall && !repliedToBot && !commandPlugins.parseCommand(cleanText).hadPrefix && !explicitCommandCall && !builtInCommand && !viewOnceCommand && !quotedInvestigateCall) {
+    suppressedBy.push('forwarded name mention');
+  }
 
   const wakeReasons = [];
-  if (namedBot) wakeReasons.push('Nick name in text');
+  if (forwardedNameWake) wakeReasons.push('Nick name in text');
   if (mentionCall) wakeReasons.push(isGroup ? 'group mention of Nick' : 'direct mention of Nick');
   if (quotedInvestigateCall) wakeReasons.push('quoted investigation request');
   if (commandPlugins.parseCommand(cleanText).hadPrefix) wakeReasons.push('command prefix');
@@ -162,6 +185,7 @@ function evaluateCallGate({
     mentionCount,
     mentionedBot,
     taggedOtherUser,
+    isForwarded,
     massTagBroadcast,
     groupMentionCall,
     repliedToBot,

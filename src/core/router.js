@@ -200,7 +200,7 @@ function statusCommandCard(command, startedAt) {
 const CORE_NORMAL_MENU_SECTIONS = [
   { title: 'Menu & Status', commands: ['menu', 'help', 'commands', 'normal menu', 'up', 'alive', 'ping', 'ping2', 'uptime', 'test'] },
   { title: 'Games', commands: ['games', 'game list', 'game leaderboard', 'stop game', 'wordgrid', 'trivia', 'scramble', 'guess', 'riddle', 'hangman', 'crossword', 'spelling bee', 'wyr', 'emoji game', 'quiz', 'ttt', 'blackjack', 'coinflip', 'slot'] },
-  { title: 'Utilities', commands: ['usage', 'ctx', 'compact', 'forget me', 'reset memory', 'help more', 'check link', 'digest now', 'vibe', 'quote', 'callad', 'donate', 'support', 'setprefix'] },
+  { title: 'Utilities', commands: ['usage', 'ctx', 'compact', 'forget me', 'reset memory', 'help more', 'check link', 'digest now', 'quote', 'callad', 'donate', 'support', 'setprefix'] },
 ];
 const EXACT_CORE_COMMANDS = new Set(CORE_NORMAL_MENU_SECTIONS[0].commands);
 
@@ -626,6 +626,7 @@ async function handleIncoming(msg) {
       config,
       stripBotAddress,
       botNameWordPattern,
+      botNamePattern,
       isCoreMenuCommand,
       numFromJid,
     });
@@ -1489,6 +1490,7 @@ if (/^(self[- ]?fix|fix yourself|health check)$/i.test(rawText) && perms.isOwner
               config,
               stripBotAddress,
               botNameWordPattern,
+              botNamePattern,
               isCoreMenuCommand,
               numFromJid,
             });
