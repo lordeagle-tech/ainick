@@ -659,6 +659,9 @@ async function handleIncoming(msg) {
       logger.debug({ jid, text: rawText.slice(0, 100) }, 'skip automated level/XP notification');
       return;
     }
+    if (isGroup && (isAddressed || isBareCall)) {
+      logger.info({ sender: String(senderJid).slice(0, 24), wakeReasons: gate.wakeReasons, suppressedBy: gate.suppressedBy, repliedToBot, namedBot, mentionCall }, 'group message addressed Nick');
+    }
 
     // Anti-view-once inspects only message-envelope keys; it never opens, downloads,
     // reveals, or forwards protected media. Run this before sticker/media handlers.

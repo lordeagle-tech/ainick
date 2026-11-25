@@ -900,6 +900,20 @@ const GENERAL_TOOLS = [
       parameters: { type: 'object', properties: {} },
     },
   },
+  {
+    type: 'function',
+    function: {
+      name: 'git_clone_public',
+      description: 'Clone a PUBLIC GitHub repository into the user workspace (no GitHub token required). Use this when the user asks to clone/download a public repo or wants a file from it. After cloning, use send_file/send_document or file tools to send requested files.',
+      parameters: {
+        type: 'object',
+        properties: {
+          repo: { type: 'string', description: 'Public GitHub repo as owner/repo or https://github.com/owner/repo URL.' },
+        },
+        required: ['repo'],
+      },
+    },
+  },
 
   {
     type: 'function',
@@ -4205,6 +4219,100 @@ async function toolRepoMemory(args, ctx) {
     repos: mem.repos || [],
     note: 'Each user has an isolated workspace under storage/workspaces/<id>/',
   };
+}
+
+const _publicCloneActive = new Set();
+const _publicCloneLastAt = new Map();
+async function toolGitClonePublic(args, ctx) {
+  const fs = require('fs');
+  const path = require('path');
+  const gitOps = require('../features').gitOps;
+  const userWorkspace = require('../features').userWorkspace;
+  const raw = String(args.repo || '').trim().replace(/\s+/g, '');
+  const bad = 'Provide a public GitHub repo as owner/repo or https://github.com/owner/repo.';
+  if (!raw) return { ok: false, error: bad };
+
+  let owner; let repo;
+  if (/^[A-Za-z0-9_.-]+\/[A-Za-z0-9_.-]+$/.test(raw)) {
+    [owner, repo] = raw.split('/');
+  } else {
+    let url;
+    try { url = new URL(raw); } catch { return { ok: false, error: bad }; }
+    if (!/^https?:$/i.test(url.protocol) || !/^(?:www\.)?github\.com$/i.test(url.hostname)) {
+      return { ok: false, error: 'Only public github.com HTTPS repositories are supported.' };
+    }
+    if (url.username || url.password) return { ok: false, error: 'Do not include credentials in public repo URLs.' };
+    const parts = url.pathname.split('/').filter(Boolean);
+    if (parts.length < 2) return { ok: false, error: bad };
+    [owner, repo] = parts;
+  }
+  repo = repo.replace(/\.git$/i, '');
+  if (!/^[A-Za-z0-9_.-]{1,100}$/.test(owner) || !/^[A-Za-z0-9_.-]{1,100}$/.test(repo) || owner === '.' || owner === '..' || repo === '.' || repo === '..') {
+    return { ok: false, error: bad };
+  }
+
+  const sender = String(ctx.senderJid || ctx.chatId || 'anon');
+  const now = Date.now();
+  if (_publicCloneActive.has(sender)) return { ok: false, error: 'A clone is already running for you. Wait for it to finish.' };
+  if (now - (_publicCloneLastAt.get(sender) || 0) < 20000) return { ok: false, error: 'Please wait a moment before cloning another repo.' };
+  _publicCloneActive.add(sender);
+  _publicCloneLastAt.set(sender, now);
+  if (_publicCloneLastAt.size > 500) _publicCloneLastAt.clear();
+
+  const repoUrl = `https://github.com/${owner}/${repo}`;
+  const root = userWorkspace.reposDir(sender);
+  const dest = path.join(root, `${owner}__${repo}-${now}`);
+  const maxBytes = 150 * 1024 * 1024;
+  const keyFiles = new Set(['readme','readme.md','readme.txt','package.json','pyproject.toml','requirements.txt','setup.py','go.mod','cargo.toml','makefile','dockerfile','docker-compose.yml','composer.json','pom.xml','build.gradle','index.js','main.py','app.py']);
+  try {
+    const result = await gitOps.gitClone(repoUrl, dest, { depth: 1, timeoutMs: 180000 });
+    if (!result.ok) {
+      fs.rmSync(dest, { recursive: true, force: true });
+      return { ok: false, error: `Could not clone ${owner}/${repo}: ${String(result.error || 'clone failed').slice(0, 300)}` };
+    }
+    let files = 0; let bytes = 0; const found = [];
+    const stack = [{ rel: '', depth: 0 }];
+    while (stack.length && files < 20000) {
+      const { rel, depth } = stack.pop();
+      let entries;
+      try { entries = fs.readdirSync(path.join(dest, rel), { withFileTypes: true }); } catch { continue; }
+      for (const entry of entries) {
+        if (['.git', 'node_modules', 'vendor'].includes(entry.name)) continue;
+        const childRel = rel ? path.join(rel, entry.name) : entry.name;
+        if (entry.isDirectory()) stack.push({ rel: childRel, depth: depth + 1 });
+        else if (entry.isFile()) {
+          files++;
+          try { bytes += fs.statSync(path.join(dest, childRel)).size; } catch {}
+          if (depth <= 2 && keyFiles.has(entry.name.toLowerCase()) && found.length < 12) found.push(childRel.replace(/\\/g, '/'));
+        }
+      }
+    }
+    if (bytes > maxBytes) {
+      fs.rmSync(dest, { recursive: true, force: true });
+      return { ok: false, error: `Repo is too large to keep (${(bytes / (1024 * 1024)).toFixed(1)} MB). Nothing saved.` };
+    }
+    const branch = await gitOps.currentBranch(dest);
+    const head = await gitOps.gitExec(['rev-parse', '--short', 'HEAD'], dest);
+    userWorkspace.rememberRepo(sender, { path: dest, name: `${owner}/${repo}`, url: repoUrl });
+    return {
+      ok: true,
+      repo: `${owner}/${repo}`,
+      url: repoUrl,
+      branch,
+      commit: head.ok ? String(head.stdout).trim() : null,
+      files,
+      sizeBytes: bytes,
+      keyFiles: found.slice(0, 8),
+      localPath: dest,
+      workspaceRelativePath: path.relative(process.cwd(), dest),
+      note: 'Public repo cloned to private workspace. Use send_file/send_document or file-reading tools to locate and send specific files the user requested.',
+    };
+  } catch (e) {
+    try { fs.rmSync(dest, { recursive: true, force: true }); } catch {}
+    return { ok: false, error: `Clone failed: ${e.message}` };
+  } finally {
+    _publicCloneActive.delete(sender);
+  }
 }
 
 async function toolPushToGithub(args, ctx) {
@@ -8187,6 +8295,7 @@ const IMPL = {
   run_subagents: toolRunSubagents,
   repo_work: toolRepoWork,
   repo_memory: toolRepoMemory,
+  git_clone_public: toolGitClonePublic,
   github_connect: toolGithubConnect,
   github_disconnect: toolGithubDisconnect,
   github_connection_status: toolGithubConnectionStatus,
@@ -9161,7 +9270,7 @@ async function toolAgentCapabilities(args, ctx) {
     mode: 'agent',
     capabilities: {
       research: ['web_search', 'search', 'news', 'scrape_webpage', 'browser_navigate', 'browser_screenshot', 'browser_scroll', 'browser_click', 'browser_type', 'browser_screen_record', 'browser_extract'],
-      code: ['build_project', 'build_website', 'preview_website', 'repo_work', 'push_to_github', 'run_subagents', 'linux_shell', 'server_exec', 'npm_search'],
+      code: ['build_project', 'build_website', 'preview_website', 'repo_work', 'git_clone_public', 'push_to_github', 'run_subagents', 'linux_shell', 'server_exec', 'npm_search'],
       github: ['github_connect', 'github_create_repo', 'github_create_issue', 'github_read_file', 'github_upsert_file', 'github_list_repos'],
       media: ['generate_image', 'generate_video', 'ytmp3', 'search_download_video', 'make_sticker', 'convert_audio', 'gofile_upload'],
       memory: ['todo_add', 'todo_list', 'todo_complete', 'note_save', 'note_list', 'set_reminder', 'proactive_add'],
